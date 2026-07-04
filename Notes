@@ -1,0 +1,24 @@
+Posting times:
+Monday: 12-2pm, 7-10pm
+Tuesday: 9-11am, 6-9pm
+Wednesday: 12-3pm, 7-9pm
+Thursday: 9am-12pm, 4-7pm
+Friday: 1-3pm, 4-8pm
+Saturday: 11am-2pm, 6-11pm
+Sunday: 9am-1pm, 7-10pm
+
+//Post 30 mins before peak windows
+
+Premium features:
+
+- Be able to see feed stories of friends
+who's posts are 1 day or older. 
+- Store all tasks and triumphs for ever.
+- Block apps which you want until you 
+have completed your task.
+
+Stuff to do:
+- Make the feed only show friends stuff
+- Make the name sync with the logged in profikle when logging in
+- Make the tree/ tasks sync up with the profile through supabase not through user stored data
+

@@ -87,10 +87,7 @@ export async function sendFriendRequest(receiverUsername) {
 export async function acceptFriendRequest(friendshipId) {
   const { data: friendship, error: friendshipError } = await supabase
     .from('friendships')
-    .update({
-      status: 'accepted',
-      updated_at: new Date().toISOString(),
-    })
+    .update({ status: 'accepted' })
     .eq('id', friendshipId)
     .select()
     .single();

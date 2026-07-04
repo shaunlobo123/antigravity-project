@@ -1,10 +1,13 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
+import { useTheme } from '../context/ThemeContext';
 import { View, Text, TextInput, TouchableOpacity, Animated, Dimensions, PanResponder, StyleSheet, Keyboard, Platform } from 'react-native';
 import * as Haptics from 'expo-haptics';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function TomorrowActivityModal({ visible, onClose, tomorrowInput, setTomorrowInput, onSave }) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => getStyles(colors), [colors]);
   const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current; // start off-screen
   const opacityAnim = useRef(new Animated.Value(0)).current;
 
@@ -62,7 +65,7 @@ export default function TomorrowActivityModal({ visible, onClose, tomorrowInput,
         {...panResponder.panHandlers}
       >
         <View style={styles.pill} />
-        <Text style={styles.heading}>What's your goal for tomorrow?</Text>
+        <Text style={styles.heading}>What&apos;s your goal for tomorrow?</Text>
         <TextInput
           style={styles.input}
           placeholder="e.g., Plan tomorrow's workout, set meeting agenda..."
@@ -73,25 +76,25 @@ export default function TomorrowActivityModal({ visible, onClose, tomorrowInput,
           onSubmitEditing={Keyboard.dismiss}
         />
         <TouchableOpacity style={styles.button} onPress={handleSave}>
-          <Text style={styles.buttonText}>Set Tomorrow's Goal</Text>
+          <Text style={styles.buttonText}>Set Tomorrow&apos;s Goal</Text>
         </TouchableOpacity>
       </Animated.View>
     </Animated.View>
   );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (colors) => StyleSheet.create({
   backdrop: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: colors.modalOverlay,
     justifyContent: 'flex-end',
   },
   modalContainer: {
-    backgroundColor: 'rgba(255,255,255,0.9)',
+    backgroundColor: colors.isDark ? 'rgba(26, 19, 15, 0.95)' : 'rgba(255, 255, 255, 0.9)',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     padding: 20,
@@ -100,36 +103,36 @@ const styles = StyleSheet.create({
     width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#ccc',
+    backgroundColor: colors.indicator,
     alignSelf: 'center',
     marginBottom: 12,
   },
   heading: {
     fontSize: 20,
     fontWeight: '800',
-    color: '#2d221a',
+    color: colors.text,
     textAlign: 'center',
     marginBottom: 16,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#e8dec9',
+    borderColor: colors.border,
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
-    color: '#2d221a',
+    color: colors.text,
     marginBottom: 16,
     minHeight: 80,
-    backgroundColor: '#fff',
+    backgroundColor: colors.card,
   },
   button: {
-    backgroundColor: '#d97706',
+    backgroundColor: colors.accent,
     paddingVertical: 12,
     borderRadius: 8,
     alignItems: 'center',
   },
   buttonText: {
-    color: '#fff',
+    color: colors.bg,
     fontWeight: '600',
     fontSize: 16,
   },

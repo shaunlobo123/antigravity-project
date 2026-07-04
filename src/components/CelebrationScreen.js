@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useTheme } from '../context/ThemeContext';
 import {
   StyleSheet,
   Text,
@@ -28,10 +29,14 @@ export default function CelebrationScreen({
   streak,
   celebrationPhase,
   onPhaseComplete,
+  onSkipPhoto,
   capturedPhoto,
+  selectedPhoto,
   onShare,
-  onSkip,
+  onSkipShare,
 }) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => getStyles(colors), [colors]);
   const titleScale = useRef(new Animated.Value(0.8)).current;
   const titleOpacity = useRef(new Animated.Value(0)).current;
   const contentSlideIn = useRef(new Animated.Value(50)).current;
@@ -114,8 +119,8 @@ export default function CelebrationScreen({
 
           {/* Task recap - minimal */}
           <View style={styles.taskRecapContainer}>
-            <Text style={styles.taskRecapLabel}>Today's victory</Text>
-            <Text style={styles.taskRecapText}>"{task}"</Text>
+            <Text style={styles.taskRecapLabel}>Today&apos;s victory</Text>
+            <Text style={styles.taskRecapText}>&quot;{task}&quot;</Text>
           </View>
 
           {/* Motivational quote */}
@@ -167,7 +172,7 @@ export default function CelebrationScreen({
           <TouchableOpacity
             onPress={() => {
               Haptics.selectionAsync();
-              onSkip?.();
+              onSkipPhoto?.();
             }}
           >
             <Text style={styles.noThanksText}>No thanks</Text>
@@ -177,13 +182,40 @@ export default function CelebrationScreen({
     );
   }
 
+  if (celebrationPhase === 'share_prompt') {
+    const displayPhoto = capturedPhoto || selectedPhoto;
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.nonScrollableContent}>
+          <View style={{ alignItems: 'center', marginTop: 10 }}>
+            <Text style={styles.celebrationTitle}>Inspire others.</Text>
+            <Text style={styles.photoSubtitle}>Share your victory to the public feed, or keep it private to your own tree.</Text>
+          </View>
+
+          <View style={styles.photoPreviewContainer}>
+             <Animated.Image source={{ uri: displayPhoto }} style={styles.photoPreview} resizeMode="cover" />
+          </View>
+
+          <View>
+            <TouchableOpacity style={styles.primaryButton} onPress={handleShare}>
+              <Text style={styles.primaryButtonText}>Share to Feed</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryButton} onPress={() => { Haptics.selectionAsync(); onSkipShare?.(); }}>
+              <Text style={styles.secondaryButtonText}>Keep Private</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return null;
 }
 
-const styles = StyleSheet.create({
+const getStyles = (colors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fcfaf2',
+    backgroundColor: colors.bg,
   },
   nonScrollableContent: {
     flex: 1,
@@ -208,23 +240,23 @@ const styles = StyleSheet.create({
     fontSize: 38,
     fontWeight: '800',
     textAlign: 'center',
-    color: '#2d221a',
+    color: colors.text,
     letterSpacing: -0.5,
     marginBottom: 16,
   },
 
   taskRecapContainer: {
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     borderRadius: 16,
     padding: 16,
     marginBottom: 16,
     borderLeftWidth: 4,
-    borderLeftColor: '#d97706',
+    borderLeftColor: colors.accent,
   },
   taskRecapLabel: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#8a7767',
+    color: colors.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     marginBottom: 8,
@@ -232,7 +264,7 @@ const styles = StyleSheet.create({
   taskRecapText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#2d221a',
+    color: colors.text,
     lineHeight: 24,
   },
 
@@ -242,7 +274,7 @@ const styles = StyleSheet.create({
   quoteText: {
     fontSize: 20,
     fontWeight: '500',
-    color: '#8a7767',
+    color: colors.textMuted,
     textAlign: 'center',
     lineHeight: 30,
     fontStyle: 'italic',
@@ -264,33 +296,33 @@ const styles = StyleSheet.create({
   statNumber: {
     fontSize: 42,
     fontWeight: '800',
-    color: '#d97706',
+    color: colors.accent,
     marginBottom: 4,
   },
   statLabel: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#8a7767',
+    color: colors.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
   statDivider: {
     width: 1,
     height: 50,
-    backgroundColor: '#e8dec9',
+    backgroundColor: colors.border,
     marginHorizontal: 20,
   },
 
   photoTitle: {
     fontSize: 32,
     fontWeight: '600',
-    color: '#2d221a',
+    color: colors.text,
     textAlign: 'center',
     marginBottom: 8,
   },
   photoSubtitle: {
     fontSize: 14,
-    color: '#8a7767',
+    color: colors.textMuted,
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 32,
@@ -303,20 +335,20 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 300,
     borderRadius: 20,
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     marginBottom: 12,
   },
   retakeButton: {
     paddingVertical: 12,
     paddingHorizontal: 16,
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     borderRadius: 12,
     alignItems: 'center',
   },
   retakeButtonText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#8a7767',
+    color: colors.textMuted,
   },
 
   bottomActionContainer: {
@@ -326,44 +358,44 @@ const styles = StyleSheet.create({
     right: 0,
     paddingHorizontal: 24,
     paddingVertical: 20,
-    backgroundColor: '#fcfaf2',
+    backgroundColor: colors.bg,
     borderTopWidth: 1,
-    borderTopColor: '#e8dec9',
+    borderTopColor: colors.border,
   },
 
   primaryButton: {
-    backgroundColor: '#d97706',
+    backgroundColor: colors.accent,
     paddingVertical: 16,
     borderRadius: 16,
     alignItems: 'center',
     marginBottom: 12,
-    shadowColor: '#d97706',
+    shadowColor: colors.accent,
     shadowOpacity: 0.15,
     shadowRadius: 12,
     elevation: 3,
   },
   primaryButtonText: {
-    color: '#fcfaf2',
+    color: colors.bg,
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0.3,
   },
 
   secondaryButton: {
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     paddingVertical: 14,
     borderRadius: 16,
     alignItems: 'center',
     borderWidth: 1.5,
-    borderColor: '#e8dec9',
+    borderColor: colors.border,
   },
   secondaryButtonText: {
-    color: '#8a7767',
+    color: colors.textMuted,
     fontSize: 15,
     fontWeight: '600',
   },
   noThanksText: {
-    color: '#b59370',
+    color: colors.textSection,
     fontSize: 14,
     textAlign: 'center',
     marginTop: 4,

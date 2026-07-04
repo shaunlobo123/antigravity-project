@@ -2,13 +2,15 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   StyleSheet, Text, View, TextInput, TouchableOpacity, Alert,
-  SafeAreaView, Animated, Easing, Keyboard, Platform,
+  SafeAreaView, Animated, Easing, Keyboard, Platform, AppState,
   Image, ScrollView, KeyboardAvoidingView,
-  TouchableWithoutFeedback, Dimensions, PanResponder, FlatList, Pressable, Modal
+  TouchableWithoutFeedback, Dimensions, PanResponder, FlatList, Pressable, Modal,
+  RefreshControl
 } from 'react-native';
-import Svg, { Path, Circle, Polyline } from 'react-native-svg';
+import Svg, { Path, Circle, Polyline, Defs, LinearGradient, Stop } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Video, ResizeMode } from 'expo-av';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { MOTIVATIONAL_MESSAGES, MOCK_PHOTOS } from './src/data/mockData';
 import GoldenTree from './src/components/GoldenTree';
@@ -23,15 +25,43 @@ import { useAuth } from './src/hooks/useAuth';
 import { supabase } from './src/utils/supabase';
 import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
+import CommentsModal from './src/components/CommentsModal';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { ThemeProvider, useTheme } from './src/context/ThemeContext';
+import { StatusBar } from 'expo-status-bar';
 
+
+// ============================================================================
+// CONFIGURATION: TESTING MODE
+// ============================================================================
+// Set IS_TESTING_MODE to true to allow creating multiple tasks per day by restarting the app.
+// Set to false to limit task completion strictly to one post per calendar day.
+const IS_TESTING_MODE = true;
+
+const REALISTIC_LEAF_PATH = "M 0 0 C -3 -6, -8 -12, -2 -20 C 4 -12, 1 -6, 0 0 M -2 -10 C -8 -12, -14 -10, -16 -16 C -10 -13, -5 -11, -2 -10 M 1 -8 C 6 -10, 12 -11, 15 -6 C 9 -8, 4 -7, 1 -8";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const PANEL_WIDTH = SCREEN_WIDTH * (2 / 3); // 2/3 Right side details drawer layout width alignment
 
-export default function App() {
+function AppContent() {
   // ─── Auth Gate ────────────────────────────────────────────────────────────
   // Must be called before any other hooks (Rules of Hooks)
   const { session, loading: authLoading } = useAuth();
+  const { colors, isDark, toggleTheme } = useTheme();
+  const styles = useMemo(() => getStyles(colors), [colors]);
+
+  // ─── Setup Screen Intro Animation State ───
+  const titleIntroProgress = useRef(new Animated.Value(0)).current;
+  const setupContentFadeAnim = useRef(new Animated.Value(0)).current;
+
+  // ─── AppState Background/Foreground Splash Overlay State ───
+  const splashTitleProgress = useRef(new Animated.Value(0)).current;
+  const splashOverlayFadeAnim = useRef(new Animated.Value(1)).current;
+  const splashTitleOpacityAnim = useRef(new Animated.Value(1)).current;
+  const [showSplashOverlay, setShowSplashOverlay] = useState(true);
+  const appState = useRef(AppState.currentState);
 
   // ─── Main App State ───────────────────────────────────────────────────────
 
@@ -48,59 +78,252 @@ export default function App() {
   const [capturedPhoto, setCapturedPhoto] = useState(null);
   const [capturedType, setCapturedType] = useState('photo'); // 'photo' | 'video'
   const [activeCommentsPostId, setActiveCommentsPostId] = useState(null);
-  const [commentInputText, setCommentInputText] = useState('');
-  const commentSheetTranslateY = useRef(new Animated.Value(SCREEN_HEIGHT * 0.7)).current;
+  const commentsModalRef = useRef(null);
+  const [currentUsername, setCurrentUsername] = useState('your_triumphs');
+  const [currentDisplayName, setCurrentDisplayName] = useState('');
+  const islandSlideAnim = useRef(new Animated.Value(0)).current;
+  const [refreshing, setRefreshing] = useState(false);
+  const leafSpinAnim = useRef(new Animated.Value(0)).current;
 
-  const dismissCommentSheet = () => {
-    triggerHapticSelection();
-    Animated.timing(commentSheetTranslateY, {
-      toValue: SCREEN_HEIGHT * 0.7,
-      duration: 220,
-      useNativeDriver: true,
-    }).start(() => {
-      setActiveCommentsPostId(null);
-      commentSheetTranslateY.setValue(SCREEN_HEIGHT * 0.7);
+  useEffect(() => {
+    let anim;
+    if (refreshing) {
+      leafSpinAnim.setValue(0);
+      anim = Animated.loop(
+        Animated.timing(leafSpinAnim, {
+          toValue: 1,
+          duration: 1200,
+          easing: Easing.linear,
+          useNativeDriver: false,
+        })
+      );
+      anim.start();
+    } else {
+      leafSpinAnim.setValue(0);
+    }
+    return () => {
+      if (anim) anim.stop();
+    };
+  }, [refreshing]);
+
+  const leafSpin = leafSpinAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
+
+
+  const runSplashIntro = () => {
+    setShowSplashOverlay(true);
+    splashTitleProgress.setValue(0);
+    splashOverlayFadeAnim.setValue(1);
+    splashTitleOpacityAnim.setValue(1);
+
+    // If there's no task locked in, prepare the setup inputs to fade in
+    if (!activeTriumph) {
+      setupContentFadeAnim.setValue(0);
+    }
+
+    // Build move + content-fade animations
+    const moveAnimations = [
+      Animated.timing(splashTitleProgress, {
+        toValue: 1,
+        duration: 600,
+        easing: Easing.bezier(0.25, 1, 0.4, 1),
+        useNativeDriver: true,
+      }),
+    ];
+
+    if (!activeTriumph) {
+      // Setup page: fade content in alongside title move
+      moveAnimations.push(
+        Animated.timing(setupContentFadeAnim, {
+          toValue: 1,
+          duration: 600,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        })
+      );
+    } else {
+      // Any other page: fade the title OUT as it moves
+      moveAnimations.push(
+        Animated.timing(splashTitleOpacityAnim, {
+          toValue: 0,
+          duration: 600,
+          easing: Easing.in(Easing.ease),
+          useNativeDriver: true,
+        })
+      );
+    }
+
+    Animated.sequence([
+      Animated.delay(10), // Hold for 0.01s in center
+      Animated.parallel(moveAnimations),
+      Animated.timing(splashOverlayFadeAnim, {
+        toValue: 0,
+        duration: 300,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      setShowSplashOverlay(false);
     });
   };
 
-  const handleOpenComments = (postId) => {
-    triggerHapticSelection();
-    commentSheetTranslateY.setValue(SCREEN_HEIGHT * 0.7);
-    setActiveCommentsPostId(postId);
-    Animated.spring(commentSheetTranslateY, {
-      toValue: 0,
-      tension: 65,
-      friction: 11,
-      useNativeDriver: true,
-    }).start();
+  useEffect(() => {
+    if (authLoading || !session) {
+      return;
+    }
+
+    // Play splash on initial mount when auth is ready
+    runSplashIntro();
+
+    // Listen to background/foreground events to play on returning
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'inactive' || nextAppState === 'background') {
+        // Instantly reset splash state so it's ready when foregrounding
+        splashTitleProgress.setValue(0);
+        splashOverlayFadeAnim.setValue(1);
+        setShowSplashOverlay(true);
+      } else if (nextAppState === 'active') {
+        runSplashIntro();
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [authLoading, session?.user?.id]);
+
+  useEffect(() => {
+    async function loadProfile() {
+      if (session?.user?.id) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('username, display_name')
+          .eq('id', session.user.id)
+          .single();
+        if (data) {
+          if (data.username) setCurrentUsername(data.username);
+          if (data.display_name) setCurrentDisplayName(data.display_name);
+        }
+      }
+    }
+    loadProfile();
+  }, [session]);
+
+  useEffect(() => {
+    if (activeCommentsPostId === null) {
+      // Comments modal is closed / island mounting -> start off-screen and slide up
+      islandSlideAnim.setValue(120);
+      Animated.sequence([
+        Animated.delay(500),
+        Animated.spring(islandSlideAnim, {
+          toValue: 0,
+          tension: 50,
+          friction: 8,
+          useNativeDriver: true,
+        })
+      ]).start();
+    }
+  }, [activeCommentsPostId]);
+
+  const fetchPosts = async () => {
+    try {
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from('posts')
+        .select('*, profiles:user_id(username, avatar_url)')
+        .gte('created_at', twentyFourHoursAgo)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        const userId = session?.user?.id;
+        const formattedPosts = data.map(post => {
+          const liked = userId ? (post.liked_by_users || []).includes(userId) : false;
+          const diffMs = Date.now() - new Date(post.created_at).getTime();
+          const diffMins = Math.floor(diffMs / 60000);
+          const diffHours = Math.floor(diffMins / 60);
+          let timeString = '';
+          if (diffMins < 1) {
+            timeString = 'just now';
+          } else if (diffMins < 60) {
+            timeString = `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+          } else {
+            timeString = `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+          }
+
+          return {
+            id: post.id.toString(),
+            user: post.profiles?.username || 'user',
+            avatar_url: post.profiles?.avatar_url || null,
+            task: post.task_title,
+            img: post.media_url,
+            mediaType: post.media_type,
+            likes: (post.liked_by_users || []).length,
+            liked: liked,
+            time: timeString,
+            comments: post.comments || [],
+            commentCount: (post.comments || []).length,
+          };
+        });
+        setFeedData(formattedPosts);
+
+        // If not in testing mode, check if the current user has already completed a task today
+        if (!IS_TESTING_MODE && userId) {
+          const todayString = new Date().toDateString();
+          const todayPost = data.find(post => {
+            return post.user_id === userId && new Date(post.created_at).toDateString() === todayString;
+          });
+
+          if (todayPost) {
+            setActiveTriumph(todayPost.task_title);
+            setIsCompleted(true);
+            setHasShared(true);
+            setCelebrationPhase('shared');
+            activeCardFade.setValue(0);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Error fetching posts from Supabase:', err);
+    }
   };
 
-  const commentPanResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gestureState) => {
-        // Dragging downwards triggers gesture sheet translation
-        return gestureState.dy > 5;
-      },
-      onPanResponderMove: (_, gestureState) => {
-        if (gestureState.dy > 0) {
-          commentSheetTranslateY.setValue(gestureState.dy);
-        }
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        if (gestureState.dy > 120 || gestureState.vy > 0.5) {
-          dismissCommentSheet();
-        } else {
-          Animated.spring(commentSheetTranslateY, {
-            toValue: 0,
-            useNativeDriver: true,
-            tension: 80,
-            friction: 12,
-          }).start();
-        }
-      },
-    })
-  ).current;
+  const isFetchingRef = useRef(false);
+
+  const handleRefresh = async () => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    setRefreshing(true);
+    triggerHapticSelection();
+    await fetchPosts();
+    setRefreshing(false);
+    isFetchingRef.current = false;
+  };
+
+  const handleScrollEndDrag = (event) => {
+    const { y } = event.nativeEvent.contentOffset;
+    if (y < -130 && !refreshing) {
+      handleRefresh();
+    }
+  };
+
+
+
+  useEffect(() => {
+    if (session) {
+      fetchPosts();
+    }
+  }, [session]);
+
+  const handleOpenComments = (postId) => {
+    triggerHapticSelection();
+    setActiveCommentsPostId(postId);
+    commentsModalRef.current?.present();
+  };
 
   const holdProgressAnim = useRef(new Animated.Value(0)).current;
   const [isHoldingComplete, setIsHoldingComplete] = useState(false);
@@ -112,6 +335,37 @@ export default function App() {
   const [triumphHistory, setTriumphHistory] = useState([
     { id: 'seed-1', task: 'Planted the initial seed of discipline.', date: 'Yesterday', photo: 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=500' }
   ]);
+  const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
+
+  useEffect(() => {
+    const loadTriumphHistory = async () => {
+      try {
+        const storedHistory = await AsyncStorage.getItem('@triumphHistory');
+        if (storedHistory !== null) {
+          setTriumphHistory(JSON.parse(storedHistory));
+        }
+      } catch (e) {
+        console.error('Failed to load triumph history', e);
+      } finally {
+        setIsHistoryLoaded(true);
+      }
+    };
+    loadTriumphHistory();
+  }, []);
+
+  useEffect(() => {
+    if (isHistoryLoaded) {
+      const saveTriumphHistory = async () => {
+        try {
+          await AsyncStorage.setItem('@triumphHistory', JSON.stringify(triumphHistory));
+        } catch (e) {
+          console.error('Failed to save triumph history', e);
+        }
+      };
+      saveTriumphHistory();
+    }
+  }, [triumphHistory, isHistoryLoaded]);
+
   const [streak, setStreak] = useState(5);
   const hasSavedTriumph = useRef(false);
   const totalTriumphs = triumphHistory.length;
@@ -283,6 +537,29 @@ export default function App() {
   ]);
 
   const scrollY = useRef(new Animated.Value(0)).current;
+
+  const pullOpacity = scrollY.interpolate({
+    inputRange: [-135, 0],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+
+  const pullScale = scrollY.interpolate({
+    inputRange: [-135, 0],
+    outputRange: [1.1, 0.4],
+    extrapolate: 'clamp',
+  });
+
+  const pullRotation = scrollY.interpolate({
+    inputRange: [-135, 0],
+    outputRange: ['-360deg', '0deg'],
+    extrapolate: 'clamp',
+  });
+
+  const finalRotation = refreshing ? leafSpin : pullRotation;
+  const finalOpacity = refreshing ? 1 : pullOpacity;
+  const finalScale = refreshing ? 1.1 : pullScale;
+
   const feedListRef = useRef(null);
   const lastTapRef = useRef({});
   const heartAnimationsRef = useRef({});
@@ -449,13 +726,13 @@ export default function App() {
     if (hasSavedTriumph.current) return;
     hasSavedTriumph.current = true;
 
-    const newId = Date.now().toString();
+    const newId = `opt-${Date.now()}`;
     const photoToUse = photoUri || selectedPhoto;
 
     // Optimistically update local state so the app feels instantly responsive
     setTriumphHistory(prev => [...prev, { id: newId, task: activeTriumph, date: 'Today', photo: photoToUse, mediaType }]);
     heartAnimationsRef.current[newId] = new Animated.Value(0);
-    setFeedData(prev => [{ id: newId, user: 'your_triumphs', task: activeTriumph, img: photoToUse, mediaType, likes: 0, liked: false, time: 'Just now', mutualFriend: 'you', commentCount: 0 }, ...prev]);
+    setFeedData(prev => [{ id: newId, user: currentUsername, task: activeTriumph, img: photoToUse, mediaType, likes: 0, liked: false, time: 'Just now', mutualFriend: 'you', commentCount: 0 }, ...prev]);
 
     try {
       const userId = session?.user?.id;
@@ -501,7 +778,7 @@ export default function App() {
 
       if (isLocalFile) {
         const fileExt = photoToUse.split('.').pop().toLowerCase() || 'jpg';
-        const mimeType = mediaType === 'video' 
+        const mimeType = mediaType === 'video'
           ? `video/${fileExt === 'mov' ? 'quicktime' : 'mp4'}`
           : `image/${fileExt === 'png' ? 'png' : 'jpeg'}`;
         const fileName = `${userId}/${Date.now()}.${fileExt}`;
@@ -535,7 +812,7 @@ export default function App() {
       }
 
       // Insert new row into the 'posts' table
-      const { error: insertError } = await supabase
+      const { data, error: insertError } = await supabase
         .from('posts')
         .insert([
           {
@@ -545,12 +822,21 @@ export default function App() {
             media_type: mediaType,
             created_at: new Date().toISOString(),
           }
-        ]);
+        ])
+        .select();
 
       if (insertError) {
         throw insertError;
       }
-      
+
+      if (data && data[0]) {
+        const dbPostId = data[0].id.toString();
+        // Swap optimistic ID with database ID
+        setFeedData(prev => prev.map(item => item.id === newId ? { ...item, id: dbPostId } : item));
+        setTriumphHistory(prev => prev.map(item => item.id === newId ? { ...item, id: dbPostId } : item));
+        heartAnimationsRef.current[dbPostId] = heartAnimationsRef.current[newId];
+      }
+
       console.log('Successfully saved triumph to database');
     } catch (err) {
       console.error('Error saving triumph to Supabase:', err);
@@ -566,18 +852,7 @@ export default function App() {
     setCapturedType(type);
     setShowCameraCapture(false);
 
-    // Directly publish to feed — skip the intermediate "Proof of victory" page
-    await addTriumphToHistory(photoUri, type);
-
-    setCelebrationPhase('shared');
-    setHasShared(true);
-    setIsOrbAnimating(true);
-
-    Animated.parallel([
-      Animated.timing(celebCardScale, { toValue: 0.95, duration: 200, useNativeDriver: true }),
-      Animated.timing(celebCardFade, { toValue: 0, duration: 300, useNativeDriver: true }),
-      Animated.timing(feedListFade, { toValue: 1, duration: 400, delay: 100, useNativeDriver: true })
-    ]).start();
+    setCelebrationPhase('share_prompt');
   };
 
   const handleCameraClosed = () => {
@@ -588,7 +863,6 @@ export default function App() {
   const handlePublishToFeed = async () => {
     triggerHapticSelection();
     const photoToUse = capturedPhoto || selectedPhoto;
-    await addTriumphToHistory(photoToUse, capturedType);
 
     setCelebrationPhase('shared');
     setHasShared(true);
@@ -600,11 +874,17 @@ export default function App() {
       Animated.timing(celebCardFade, { toValue: 0, duration: 300, useNativeDriver: true }),
       Animated.timing(feedListFade, { toValue: 1, duration: 400, delay: 100, useNativeDriver: true })
     ]).start();
+
+    await addTriumphToHistory(photoToUse, capturedType);
+  };
+
+  const handleSkipPhoto = () => {
+    triggerHapticSelection();
+    setCelebrationPhase('share_prompt');
   };
 
   const handleSkipSharing = async () => {
     triggerHapticSelection();
-    await addTriumphToHistory(selectedPhoto, 'photo');
 
     setCelebrationPhase('shared');
     setHasShared(true);
@@ -616,23 +896,28 @@ export default function App() {
       Animated.timing(celebCardFade, { toValue: 0, duration: 300, useNativeDriver: true }),
       Animated.timing(feedListFade, { toValue: 1, duration: 400, delay: 100, useNativeDriver: true })
     ]).start();
+
+    await addTriumphToHistory(selectedPhoto, 'photo');
   };
 
   const activeCommentsPost = useMemo(() => {
     return feedData.find(item => item.id === activeCommentsPostId);
   }, [feedData, activeCommentsPostId]);
 
-  const handleAddComment = () => {
-    if (!commentInputText.trim()) return;
-    triggerHapticSelection();
+  const handleAddComment = async (commentText) => {
+    if (!commentText.trim()) return;
+    const userId = session?.user?.id;
+    if (!userId) return;
 
     const newComment = {
       id: Date.now().toString(),
-      user: 'your_triumphs',
-      text: commentInputText.trim(),
-      time: 'Just now',
+      user: currentUsername,
+      user_id: userId,
+      text: commentText.trim(),
+      time: new Date().toISOString(),
     };
 
+    // Optimistically update UI
     setFeedData(prev => prev.map(post => {
       if (post.id === activeCommentsPostId) {
         return {
@@ -644,22 +929,89 @@ export default function App() {
       return post;
     }));
 
-    setCommentInputText('');
-    Keyboard.dismiss();
+    // Update in Supabase
+    const isDbPost = activeCommentsPostId && !activeCommentsPostId.toString().startsWith('opt-');
+    if (isDbPost) {
+      try {
+        const { data, error: fetchErr } = await supabase
+          .from('posts')
+          .select('comments')
+          .eq('id', activeCommentsPostId)
+          .single();
+
+        if (fetchErr) throw fetchErr;
+
+        const updatedComments = [...(data.comments || []), newComment];
+
+        const { error: updateErr } = await supabase
+          .from('posts')
+          .update({ comments: updatedComments })
+          .eq('id', activeCommentsPostId);
+
+        if (updateErr) throw updateErr;
+      } catch (err) {
+        console.error('Error updating comments in Supabase:', err);
+      }
+    }
   };
 
   const shouldShowFeed = !isCompleted || hasShared;
 
-  const toggleLikePost = (postId) => {
+  const toggleLikePost = async (postId) => {
     triggerHapticSelection();
-    setFeedData(prev => prev.map(item => item.id === postId ? { ...item, likes: item.liked ? item.likes - 1 : item.likes + 1, liked: !item.liked } : item));
+    const userId = session?.user?.id;
+    if (!userId) return;
+
+    const post = feedData.find(item => item.id === postId);
+    if (!post) return;
+
+    const newLiked = !post.liked;
+    const newLikesCount = newLiked ? post.likes + 1 : post.likes - 1;
+
+    // Optimistically update UI
+    setFeedData(prev => prev.map(item => item.id === postId ? { ...item, likes: newLikesCount, liked: newLiked } : item));
+
+    const isDbPost = postId && !postId.toString().startsWith('opt-');
+    if (isDbPost) {
+      try {
+        const { data, error: fetchErr } = await supabase
+          .from('posts')
+          .select('liked_by_users')
+          .eq('id', postId)
+          .single();
+
+        if (fetchErr) throw fetchErr;
+
+        let likedByUsers = data.liked_by_users || [];
+        if (newLiked) {
+          if (!likedByUsers.includes(userId)) {
+            likedByUsers.push(userId);
+          }
+        } else {
+          likedByUsers = likedByUsers.filter(id => id !== userId);
+        }
+
+        const { error: updateErr } = await supabase
+          .from('posts')
+          .update({ liked_by_users: likedByUsers })
+          .eq('id', postId);
+
+        if (updateErr) throw updateErr;
+      } catch (err) {
+        console.error('Error updating like in Supabase:', err);
+        // Rollback UI update
+        setFeedData(prev => prev.map(item => item.id === postId ? { ...item, likes: post.likes, liked: post.liked } : item));
+      }
+    }
   };
 
   const handleImageDoubleTap = (postId) => {
     const now = Date.now();
     if (now - (lastTapRef.current[postId] || 0) < 300) {
-      triggerHapticSelection();
-      setFeedData(prev => prev.map(item => item.id === postId && !item.liked ? { ...item, likes: item.likes + 1, liked: true } : item));
+      const post = feedData.find(item => item.id === postId);
+      if (post && !post.liked) {
+        toggleLikePost(postId);
+      }
       const anim = heartAnimationsRef.current[postId];
       if (anim) {
         anim.setValue(0);
@@ -704,8 +1056,8 @@ export default function App() {
     inputRange: [0, 240],
     outputRange: [16, 0],
     extrapolate: 'clamp'
-  }); 
-  
+  });
+
   // Auth gate: shown after all hooks have been called (Rules of Hooks compliant)
   if (authLoading) {
     return (
@@ -720,600 +1072,677 @@ export default function App() {
   }
 
   return (
-    <View style={styles.rootWrapper}>
-      <View style={styles.mainContainer}>
+    <SafeAreaProvider>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <BottomSheetModalProvider>
+          <StatusBar style={isDark ? 'light' : 'dark'} />
+          <View style={styles.rootWrapper}>
+            <View style={styles.mainContainer}>
 
-        <Animated.ScrollView
-          ref={pageScrollRef}
-          horizontal
-          pagingEnabled
-          bounces={false}
-          showsHorizontalScrollIndicator={false}
-          scrollEnabled={!!activeTriumph && !selectedNodeDetails && !isMilestoneModalOpen} // locks swipe when setting task, detailed panel or milestone modal is open
-          contentOffset={{ x: SCREEN_WIDTH, y: 0 }} // Start on Center Page (index 1)
-          onScroll={Animated.event(
-            [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-            { useNativeDriver: false }
-          )}
-          scrollEventThrottle={16}
-          onMomentumScrollEnd={(event) => {
-            isProgrammaticScroll.current = false;
-            const index = Math.round(event.nativeEvent.contentOffset.x / SCREEN_WIDTH);
-            if (index !== currentPage) {
-              setCurrentPage(index);
-              triggerHapticSelection();
-            }
-          }}
-        >
-          {/* ================= COLUMN 1: PROGRESS TREE ================= */}
-          <View style={{ width: SCREEN_WIDTH, height: '100%', backgroundColor: '#fcfaf2' }}>
-            <SafeAreaView style={{ flex: 1 }}>
-              <View style={{ flex: 1 }}>
-                <GoldenTree
-                  history={triumphHistory}
-                  targetGrowthTrigger={growthTrigger}
-                  onNodeSelect={handleNodeSelectFromCanvas}
-                  onMilestonePanelChange={setIsMilestoneModalOpen}
-                  isTreeOpen={currentPage === 0}
-                />
-
-                {/* Floating Plus button on Tree Page */}
-                {isCompleted && (
-                  <TouchableOpacity
-                    style={{
-                      position: 'absolute',
-                      top: 20,
-                      right: 20,
-                      padding: 8,
-                      zIndex: 10,
-                    }}
-                    onPress={() => {
-                      triggerHapticSelection();
-                      openTomorrow();
-                    }}
-                  >
-                    <Text style={{ color: '#d97706', fontSize: 32, fontWeight: '300', marginTop: Platform.OS === 'ios' ? -2 : -4 }}>+</Text>
-                  </TouchableOpacity>
+              <Animated.ScrollView
+                ref={pageScrollRef}
+                horizontal
+                pagingEnabled
+                bounces={false}
+                showsHorizontalScrollIndicator={false}
+                scrollEnabled={!!activeTriumph && !selectedNodeDetails && !isMilestoneModalOpen && !showCameraCapture && !(isCompleted && !hasShared)} // locks swipe when setting task, detailed panel, milestone modal, camera, or celebration screen is open
+                contentOffset={{ x: SCREEN_WIDTH, y: 0 }} // Start on Center Page (index 1)
+                onScroll={Animated.event(
+                  [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+                  { useNativeDriver: false }
                 )}
-              </View>
-            </SafeAreaView>
-          </View>
+                scrollEventThrottle={16}
+                onMomentumScrollEnd={(event) => {
+                  isProgrammaticScroll.current = false;
+                  const index = Math.round(event.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+                  if (index !== currentPage) {
+                    setCurrentPage(index);
+                    triggerHapticSelection();
+                  }
+                }}
+              >
+                {/* ================= COLUMN 1: PROGRESS TREE ================= */}
+                <View style={{ width: SCREEN_WIDTH, height: '100%', backgroundColor: colors.bg }}>
+                  <SafeAreaView style={{ flex: 1 }}>
+                    <View style={{ flex: 1 }}>
+                      <GoldenTree
+                        history={triumphHistory}
+                        targetGrowthTrigger={growthTrigger}
+                        onNodeSelect={handleNodeSelectFromCanvas}
+                        onMilestonePanelChange={setIsMilestoneModalOpen}
+                        isTreeOpen={currentPage === 0}
+                      />
 
-          {/* ================= COLUMN 2: DAILY FOCUS & FEED ================= */}
-          <View style={{ width: SCREEN_WIDTH, height: '100%', backgroundColor: '#fcfaf2' }}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboardAvoidingContainer} enabled={false}>
-
-              {!activeTriumph ? (
-                <SafeAreaView style={{ flex: 1 }}>
-                  <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-                    <Animated.View style={[
-                      styles.cleanSetupCenteredContainer,
-                      {
-                        opacity: setupFadeAnim,
-                        transform: [
-                          { translateY: keyboardShiftAnim },
-                          {
-                            scale: setupFadeAnim.interpolate({
-                              inputRange: [0, 1],
-                              outputRange: [0.94, 1]
-                            })
-                          }
-                        ]
-                      }
-                    ]}>
-                      <View style={styles.header}>
-                        <Text style={styles.headerTitle}>One Thing Daily</Text>
-                        <Text style={styles.subtitle}>What is your goal for the today?</Text>
-                      </View>
-                      <View style={styles.card}>
-                        <TextInput
-                          style={styles.input}
-                          placeholder="e.g., Read 10 pages, call your mum..."
-                          placeholderTextColor="#999"
-                          multiline
-                          value={taskInput}
-                          onChangeText={setTaskInput}
-                          blurOnSubmit={true}
-                          onSubmitEditing={Keyboard.dismiss}
-                        />
-                        <TouchableOpacity style={styles.button} onPress={() => { triggerHapticSelection(); handleLockIn(); }}>
-                          <Text style={styles.buttonText}>Set Daily Task</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </Animated.View>
-                  </TouchableWithoutFeedback>
-                </SafeAreaView>
-              ) : (
-                <View style={{ flex: 1 }}>
-                  <Animated.View style={[styles.stickyDashboardWrapper, {
-                    paddingTop: stickyPaddingTop,
-                    paddingBottom: stickyPaddingBottom,
-                    borderBottomWidth: stickyBorderWidth
-                  }]}>
-                    <Animated.View style={{ opacity: greetingOpacity, height: greetingHeight, overflow: 'hidden' }}>
-                      <View style={styles.inlineHeaderRow}>
+                      {/* Floating Plus button on Tree Page */}
+                      {isCompleted && (
                         <TouchableOpacity
                           style={{
-                            width: 38,
-                            height: 38,
-                            borderRadius: 19,
-                            borderWidth: 1.5,
-                            borderColor: '#ebd5b0',
-                            backgroundColor: '#f3eade',
-                            justifyContent: 'center',
-                            alignItems: 'center',
-                            zIndex: 2,
-                            overflow: 'hidden',
+                            position: 'absolute',
+                            top: 20,
+                            right: 20,
+                            padding: 8,
+                            zIndex: 10,
                           }}
                           onPress={() => {
                             triggerHapticSelection();
-                            pageScrollRef.current?.scrollTo({ x: 0, animated: true });
-                            setCurrentPage(0);
+                            openTomorrow();
                           }}
                         >
-                          {isTreeIconPulsating && (
-                            <Animated.View
-                              style={{
-                                position: 'absolute',
-                                width: 28,
-                                height: 28,
-                                borderRadius: 14,
-                                backgroundColor: '#FFD700',
-                                shadowColor: '#FFD700',
-                                shadowOffset: { width: 0, height: 0 },
-                                shadowOpacity: 0.8,
-                                shadowRadius: 10,
-                                elevation: 5,
-                                transform: [{ scale: headerPulseAnim }],
-                                opacity: 0.8,
-                              }}
-                            />
-                          )}
-                          <Image
-                            source={require('./assets/image_86ac9a.png')}
-                            style={{ width: 22, height: 22, zIndex: 3, resizeMode: 'contain' }}
-                          />
+                          <Text style={{ color: '#d97706', fontSize: 32, fontWeight: '300', marginTop: Platform.OS === 'ios' ? -2 : -4 }}>+</Text>
                         </TouchableOpacity>
-
-                        <View style={styles.greetingCenterWrapper}>
-                          <Text style={styles.greetingText}>Hello, Champion</Text>
-                        </View>
-
-                        {/* Simple Fire emoji inline status */}
-                        <View style={[styles.inlineStatsRow, { flexDirection: 'row', alignItems: 'center' }]}>
-                          <Text style={styles.inlineStatText}>🔥 </Text>
-                          <RollingNumber
-                            value={streak}
-                            height={16}
-                            fontSize={14}
-                            fontWeight="800"
-                            color="#d97706"
-                            active={currentPage === 1}
-                          />
-                        </View>
-                      </View>
-                      <Text style={styles.insightText}>{currentMessage}</Text>
-                    </Animated.View>
-                  </Animated.View>
-
-                  <Animated.View style={[styles.hardwareWorkspaceFrame, { flex: 1, marginHorizontal: 0, width: SCREEN_WIDTH, marginTop: frameMarginTop, paddingBottom: 0 }]}>
-                    <Pressable
-                      onPressIn={startHoldComplete}
-                      onPressOut={cancelHoldComplete}
-                      disabled={isCompleted}
-                      style={{ flex: 1 }}
-                    >
-                      <Animated.View
-                        style={[
-                          styles.taskHeroCard,
-                          {
-                            opacity: activeCardFade,
-                            zIndex: !isCompleted ? 10 : 0,
-                            transform: [{ scale: cardScale }]
-                          }
-                        ]}
-                      >
-                        <View style={{ flex: 1, justifyContent: 'space-between', width: '100%' }}>
-                          <View>
-                            <Text style={styles.activeSectionLabel}>{"TODAY'S ONE THING"}</Text>
-                            <Text style={styles.taskHeroTag}>Focus + Flow</Text>
-                          </View>
-
-                          <View style={styles.taskTextWrapper}>
-                            <Text style={styles.triumphDisplayFormat} numberOfLines={5}>{activeTriumph}</Text>
-                          </View>
-
-                          <Text style={styles.holdInstructionText}>
-                            {isHoldingComplete ? 'Holding to complete...' : 'Hold anywhere to complete'}
-                          </Text>
-                        </View>
-
-                        <View style={styles.sliderProgressTrack}>
-                          <Animated.View
-                            style={[
-                              styles.sliderProgressFill,
-                              {
-                                width: holdProgressAnim.interpolate({
-                                  inputRange: [0, 1],
-                                  outputRange: ['0%', '100%'],
-                                }),
-                              },
-                            ]}
-                          />
-                        </View>
-                      </Animated.View>
-                    </Pressable>
-
-                    <Animated.View style={[StyleSheet.absoluteFillObject, styles.celebrationFullScreenOverlay, { opacity: celebCardFade, zIndex: 999, backgroundColor: 'rgba(252, 250, 242, 0.93)' }]} pointerEvents={(isCompleted && !hasShared) ? 'auto' : 'none'}>
-                      {showCameraCapture ? (
-                        <CameraCapture
-                          onPhotoCaptured={handlePhotoCaptured}
-                          onCancel={handleCameraClosed}
-                          onSkip={handleSkipSharing}
-                          task={activeTriumph}
-                        />
-                      ) : (
-                        <CelebrationScreen
-                          task={activeTriumph}
-                          totalTriumphs={totalTriumphs}
-                          streak={streak}
-                          celebrationPhase={celebrationPhase}
-                          onPhaseComplete={handleCelebrationPhaseComplete}
-                          capturedPhoto={capturedPhoto}
-                          onShare={handlePublishToFeed}
-                          onSkip={handleSkipSharing}
-                        />
                       )}
-                    </Animated.View>
+                    </View>
+                  </SafeAreaView>
+                </View>
 
-                    {hasShared && (
-                      <FlatList
-                        data={feedData}
-                        renderItem={({ item }) => {
-                          const overlayScale = heartAnimationsRef.current[item.id] || new Animated.Value(0);
-                          return (
-                            <View style={styles.instagramPostCard}>
-                              {/* User Header Section (Outside / Above Image) */}
-                              <View style={styles.postCardHeader}>
-                                <View style={{ flex: 1, marginRight: 8 }}>
-                                  <Text style={styles.postUserBadge}>{item.user}</Text>
-                                  <Text style={styles.postActionText} numberOfLines={2}>
-                                    {item.task}
-                                  </Text>
-                                </View>
-                                <Text style={styles.postTimeLabel}>{item.time}</Text>
+                {/* ================= COLUMN 2: DAILY FOCUS & FEED ================= */}
+                <View style={{ width: SCREEN_WIDTH, height: '100%', backgroundColor: colors.bg }}>
+                  <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboardAvoidingContainer} enabled={false}>
+
+                    {!activeTriumph ? (
+                      <SafeAreaView style={{ flex: 1 }}>
+                        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+                          <Animated.View style={[
+                            styles.cleanSetupCenteredContainer,
+                            {
+                              opacity: setupFadeAnim,
+                              transform: [
+                                { translateY: keyboardShiftAnim },
+                                {
+                                  scale: setupFadeAnim.interpolate({
+                                    inputRange: [0, 1],
+                                    outputRange: [0.94, 1]
+                                  })
+                                }
+                              ]
+                            }
+                          ]}>
+                            <View style={styles.header}>
+                              <Text style={styles.headerTitle}>One Thing Daily</Text>
+                              <Animated.Text style={[styles.subtitle, { opacity: setupContentFadeAnim }]}>
+                                What is your goal for the today?
+                              </Animated.Text>
+                            </View>
+                            <Animated.View
+                              style={[
+                                styles.card,
+                                {
+                                  opacity: setupContentFadeAnim,
+                                  transform: [
+                                    {
+                                      translateY: setupContentFadeAnim.interpolate({
+                                        inputRange: [0, 1],
+                                        outputRange: [15, 0]
+                                      })
+                                    }
+                                  ]
+                                }
+                              ]}
+                            >
+                              <TextInput
+                                style={styles.input}
+                                placeholder="e.g., Read 10 pages, call your mum..."
+                                placeholderTextColor="#999"
+                                multiline
+                                value={taskInput}
+                                onChangeText={setTaskInput}
+                                blurOnSubmit={true}
+                                onSubmitEditing={Keyboard.dismiss}
+                              />
+                              <TouchableOpacity style={styles.button} onPress={() => { triggerHapticSelection(); handleLockIn(); }}>
+                                <Text style={styles.buttonText}>Set Daily Task</Text>
+                              </TouchableOpacity>
+                            </Animated.View>
+                          </Animated.View>
+                        </TouchableWithoutFeedback>
+                      </SafeAreaView>
+                    ) : (
+                      <View style={{ flex: 1 }}>
+                        <Animated.View style={[styles.stickyDashboardWrapper, {
+                          paddingTop: stickyPaddingTop,
+                          paddingBottom: stickyPaddingBottom,
+                          borderBottomWidth: stickyBorderWidth
+                        }]}>
+                          <Animated.View style={{ opacity: greetingOpacity, height: greetingHeight, overflow: 'hidden' }}>
+                            <View style={styles.inlineHeaderRow}>
+                              <TouchableOpacity
+                                style={{
+                                  width: 38,
+                                  height: 38,
+                                  borderRadius: 19,
+                                  borderWidth: 1.5,
+                                  borderColor: colors.cardBorder,
+                                  backgroundColor: colors.borderLight,
+                                  justifyContent: 'center',
+                                  alignItems: 'center',
+                                  zIndex: 2,
+                                  overflow: 'hidden',
+                                }}
+                                onPress={() => {
+                                  triggerHapticSelection();
+                                  pageScrollRef.current?.scrollTo({ x: 0, animated: true });
+                                  setCurrentPage(0);
+                                }}
+                              >
+                                {isTreeIconPulsating && (
+                                  <Animated.View
+                                    style={{
+                                      position: 'absolute',
+                                      width: 28,
+                                      height: 28,
+                                      borderRadius: 14,
+                                      backgroundColor: '#FFD700',
+                                      shadowColor: '#FFD700',
+                                      shadowOffset: { width: 0, height: 0 },
+                                      shadowOpacity: 0.8,
+                                      shadowRadius: 10,
+                                      elevation: 5,
+                                      transform: [{ scale: headerPulseAnim }],
+                                      opacity: 0.8,
+                                    }}
+                                  />
+                                )}
+                                <Image
+                                  source={require('./assets/image_86ac9a.png')}
+                                  style={{ width: 22, height: 22, zIndex: 3, resizeMode: 'contain' }}
+                                />
+                              </TouchableOpacity>
+
+                              <View style={styles.greetingCenterWrapper}>
+                                <Text style={styles.greetingText}>
+                                  Hello {currentDisplayName ? currentDisplayName.split(' ')[0] : (currentUsername !== 'your_triumphs' ? currentUsername : 'Champion')}
+                                </Text>
                               </View>
 
-                              <TouchableWithoutFeedback onPress={() => { triggerHapticSelection(); handleImageDoubleTap(item.id); }}>
-                                <View style={styles.postImageWrapper}>
-                                  {item.mediaType === 'video' ? (
-                                    <Video
-                                      source={{ uri: item.img }}
-                                      rate={1.0}
-                                      volume={1.0}
-                                      isMuted={true}
-                                      resizeMode={ResizeMode.COVER}
-                                      shouldPlay
-                                      isLooping
-                                      style={styles.postHeroImage}
-                                    />
-                                  ) : (
-                                    <Image source={{ uri: item.img }} style={styles.postHeroImage} />
-                                  )}
-
-                                  {/* Double-tap big heart animation */}
-                                  <Animated.View style={[styles.centerHeartOverlay, { opacity: overlayScale, transform: [{ scale: overlayScale }] }]}>
-                                    <Text style={styles.overlayHeartText}>❤️</Text>
-                                  </Animated.View>
-
-                                  {/* Like, Comment, and Liked-by status overlaid on the bottom portion of the picture */}
-                                  <View style={styles.bottomOverlayContainer}>
-                                    <View style={styles.reelsActionBar}>
-                                      <TouchableOpacity
-                                        style={styles.actionIconButton}
-                                        onPress={() => { triggerHapticSelection(); toggleLikePost(item.id); }}
-                                      >
-                                        <Svg width={24} height={24} viewBox="0 0 24 24" fill={item.liked ? "#d97706" : "none"} stroke={item.liked ? "#d97706" : "#fcfaf2"} strokeWidth={2}>
-                                          <Path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-                                        </Svg>
-                                      </TouchableOpacity>
-
-                                      <TouchableOpacity
-                                        style={styles.actionIconButton}
-                                        onPress={() => handleOpenComments(item.id)}
-                                      >
-                                        <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#fcfaf2" strokeWidth={2}>
-                                          <Path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-                                        </Svg>
-                                      </TouchableOpacity>
-                                    </View>
-
-                                    <View style={styles.socialProofRow}>
-                                      <Text style={styles.likedByTextOverlaid}>
-                                        Liked by <Text style={styles.boldUsernameOverlaid}>{item.likes} others</Text>
-                                        {(item.commentCount || 0) > 0 && <Text style={styles.commentProofTextOverlaid}>  •  {item.commentCount} comments</Text>}
-                                      </Text>
-                                    </View>
-                                  </View>
-                                </View>
-                              </TouchableWithoutFeedback>
+                              {/* Simple Fire emoji inline status */}
+                              <View style={[styles.inlineStatsRow, { flexDirection: 'row', alignItems: 'center' }]}>
+                                <Text style={styles.inlineStatText}>🔥 </Text>
+                                <RollingNumber
+                                  value={streak}
+                                  height={16}
+                                  fontSize={14}
+                                  fontWeight="800"
+                                  color={colors.accent}
+                                  active={currentPage === 1}
+                                />
+                              </View>
                             </View>
-                          );
-                        }}
-                        keyExtractor={item => item.id}
-                        windowSize={5}
-                        contentContainerStyle={{ paddingTop: 12, paddingBottom: 110, paddingHorizontal: 16 }}
-                        onScroll={Animated.event(
-                          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-                          {
-                            useNativeDriver: false,
-                            listener: (event) => { scrollOffset.current = event.nativeEvent.contentOffset.y; }
-                          }
-                        )}
-                        scrollEventThrottle={16}
-                        ListHeaderComponent={
-                          <View style={styles.feedHeaderRowBypass}>
-                            <Text style={styles.feedSectionLabel}>{"What's everyone else up to?"}</Text>
-                          </View>
-                        }
-                      />
+                            <Text style={styles.insightText}>{currentMessage}</Text>
+                          </Animated.View>
+                        </Animated.View>
+
+                        <Animated.View style={[styles.hardwareWorkspaceFrame, { flex: 1, marginHorizontal: 0, width: SCREEN_WIDTH, marginTop: frameMarginTop, paddingBottom: 0 }]}>
+                          {!hasShared && (
+                            <Pressable
+                              onPressIn={startHoldComplete}
+                              onPressOut={cancelHoldComplete}
+                              disabled={isCompleted}
+                              style={{ flex: 1 }}
+                            >
+                              <Animated.View
+                                style={[
+                                  styles.taskHeroCard,
+                                  {
+                                    opacity: activeCardFade,
+                                    zIndex: !isCompleted ? 10 : 0,
+                                    transform: [{ scale: cardScale }]
+                                  }
+                                ]}
+                              >
+                                <View style={{ flex: 1, justifyContent: 'space-between', width: '100%' }}>
+                                  <View>
+                                    <Text style={styles.activeSectionLabel}>{"TODAY'S ONE THING"}</Text>
+                                    <Text style={styles.taskHeroTag}>Focus + Flow</Text>
+                                  </View>
+
+                                  <View style={styles.taskTextWrapper}>
+                                    <Text style={styles.triumphDisplayFormat} numberOfLines={5}>{activeTriumph}</Text>
+                                  </View>
+
+                                  <Text style={styles.holdInstructionText}>
+                                    {isHoldingComplete ? 'Holding to complete...' : 'Hold anywhere to complete'}
+                                  </Text>
+                                </View>
+
+                                <View style={styles.sliderProgressTrack}>
+                                  <Animated.View
+                                    style={[
+                                      styles.sliderProgressFill,
+                                      {
+                                        width: holdProgressAnim.interpolate({
+                                          inputRange: [0, 1],
+                                          outputRange: ['0%', '100%'],
+                                        }),
+                                      },
+                                    ]}
+                                  />
+                                </View>
+                              </Animated.View>
+                            </Pressable>
+                          )}
+
+                          <Animated.View style={[
+                            StyleSheet.absoluteFillObject,
+                            styles.celebrationFullScreenOverlay,
+                            {
+                              opacity: celebCardFade,
+                              zIndex: 999,
+                              backgroundColor: 'rgba(252, 250, 242, 0.93)',
+                              transform: [
+                                { scale: celebCardScale },
+                                { translateY: celebCardTranslateY }
+                              ]
+                            }
+                          ]} pointerEvents={(isCompleted && !hasShared) ? 'auto' : 'none'}>
+                            {showCameraCapture ? (
+                              <CameraCapture
+                                onPhotoCaptured={handlePhotoCaptured}
+                                onCancel={handleCameraClosed}
+                                onSkip={handleSkipSharing}
+                                task={activeTriumph}
+                              />
+                            ) : (
+                              <CelebrationScreen
+                                task={activeTriumph}
+                                totalTriumphs={totalTriumphs}
+                                streak={streak}
+                                celebrationPhase={celebrationPhase}
+                                onPhaseComplete={handleCelebrationPhaseComplete}
+                                onSkipPhoto={handleSkipPhoto}
+                                capturedPhoto={capturedPhoto}
+                                selectedPhoto={selectedPhoto}
+                                onShare={handlePublishToFeed}
+                                onSkipShare={handleSkipSharing}
+                              />
+                            )}
+                          </Animated.View>
+
+                          {hasShared && (
+                            <FlatList
+                              data={feedData}
+                              renderItem={({ item }) => {
+                                const overlayScale = heartAnimationsRef.current[item.id] || new Animated.Value(0);
+                                return (
+                                  <View style={styles.instagramPostCard}>
+                                    <TouchableWithoutFeedback onPress={() => { triggerHapticSelection(); handleImageDoubleTap(item.id); }}>
+                                      <View style={{ width: '100%', height: '100%' }}>
+                                        {/* Media */}
+                                        {item.mediaType === 'video' ? (
+                                          <Video
+                                            source={{ uri: item.img }}
+                                            rate={1.0}
+                                            volume={1.0}
+                                            isMuted={true}
+                                            resizeMode={ResizeMode.COVER}
+                                            shouldPlay
+                                            isLooping
+                                            style={styles.postHeroImage}
+                                          />
+                                        ) : (
+                                          <Image source={{ uri: item.img }} style={styles.postHeroImage} />
+                                        )}
+
+                                        {/* Double-tap heart overlay */}
+                                        <Animated.View style={[styles.centerHeartOverlay, { opacity: overlayScale, transform: [{ scale: overlayScale }] }]}>
+                                          <Text style={styles.overlayHeartText}>❤️</Text>
+                                        </Animated.View>
+
+                                        {/* Top Overlay: Avatar, Username, Time */}
+                                        <View style={styles.postAvatarTopOverlay}>
+                                          {item.avatar_url ? (
+                                            <Image source={{ uri: item.avatar_url }} style={styles.feedPostAvatar} />
+                                          ) : (
+                                            <View style={[styles.feedPostAvatar, { backgroundColor: colors.borderLight }]} />
+                                          )}
+                                          <View style={{ flex: 1, marginRight: 8, justifyContent: 'center' }}>
+                                            <Text style={styles.postUserBadgeOverlay}>{item.user}</Text>
+                                            <Text style={styles.postTimeLabelOverlay}>{item.time}</Text>
+                                          </View>
+                                        </View>
+
+                                        {/* Bottom Overlay: Task Text + Actions side by side */}
+                                        <View style={styles.postBottomOverlayBox}>
+                                          <View style={{ flex: 1, paddingRight: 16 }}>
+                                            <Text style={styles.postTaskOverlayLabel}>TODAY'S VICTORY</Text>
+                                            <Text style={styles.postTaskOverlayText} numberOfLines={3}>"{item.task}"</Text>
+                                          </View>
+
+                                          <View style={{ alignItems: 'flex-end', justifyContent: 'center' }}>
+                                            <View style={styles.postCardFooterActions}>
+                                              <TouchableOpacity
+                                                style={styles.actionIconButton}
+                                                onPress={() => handleOpenComments(item.id)}
+                                              >
+                                                <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#fcfaf2" strokeWidth={2}>
+                                                  <Path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                                                </Svg>
+                                              </TouchableOpacity>
+
+                                              <TouchableOpacity
+                                                style={styles.actionIconButton}
+                                                onPress={() => { triggerHapticSelection(); toggleLikePost(item.id); }}
+                                              >
+                                                <Svg width={24} height={24} viewBox="0 0 24 24" fill={item.liked ? "#d97706" : "none"} stroke={item.liked ? "#d97706" : "#fcfaf2"} strokeWidth={2}>
+                                                  <Path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                                                </Svg>
+                                              </TouchableOpacity>
+                                            </View>
+                                            
+                                            {item.likes > 0 && (
+                                              <Text style={[styles.likedByTextOverlaid, { marginTop: 4, fontSize: 11 }]}>
+                                                {item.likes} {item.likes === 1 ? 'like' : 'likes'}
+                                              </Text>
+                                            )}
+                                          </View>
+                                        </View>
+                                      </View>
+                                    </TouchableWithoutFeedback>
+                                  </View>
+                                );
+                              }}
+                              keyExtractor={item => item.id}
+                              windowSize={5}
+                              contentContainerStyle={{ paddingTop: 12, paddingBottom: 110, paddingHorizontal: 16 }}
+                              refreshControl={
+                                <RefreshControl
+                                  refreshing={refreshing}
+                                  onRefresh={handleRefresh}
+                                  colors={['#d97706']}
+                                  tintColor={Platform.OS === 'ios' ? '#fcfaf2' : '#d97706'}
+                                  progressBackgroundColor="#fffdf9"
+                                />
+                              }
+                              onScrollEndDrag={Platform.OS === 'ios' ? handleScrollEndDrag : undefined}
+                              onScroll={Animated.event(
+                                [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+                                {
+                                  useNativeDriver: false,
+                                  listener: (event) => { scrollOffset.current = event.nativeEvent.contentOffset.y; }
+                                }
+                              )}
+                              scrollEventThrottle={16}
+                              ListHeaderComponent={
+                                <View style={styles.feedHeaderRowBypass}>
+                                  {Platform.OS === 'ios' && (
+                                    <Animated.View style={[
+                                      styles.customRefreshLoaderAbsolute,
+                                      {
+                                        top: -75,
+                                        opacity: finalOpacity,
+                                        transform: [
+                                          { scale: finalScale },
+                                          { rotate: finalRotation }
+                                        ]
+                                      }
+                                    ]}>
+                                      <Svg width={40} height={40} viewBox="-20 -25 40 40">
+                                        <Defs>
+                                          <LinearGradient id="goldLeafGradient" x1="0%" y1="100%" x2="100%" y2="0%">
+                                            <Stop offset="0%" stopColor="#d97706" />
+                                            <Stop offset="50%" stopColor="#fbbf24" />
+                                            <Stop offset="100%" stopColor="#fef08a" />
+                                          </LinearGradient>
+                                        </Defs>
+                                        <Path d={REALISTIC_LEAF_PATH} fill="url(#goldLeafGradient)" stroke="#a75a0c" strokeWidth={1.8} />
+                                      </Svg>
+                                    </Animated.View>
+                                  )}
+                                  <Text style={styles.feedSectionLabel}>{"What's everyone else up to?"}</Text>
+                                </View>
+                              }
+                            />
+                          )}
+                        </Animated.View>
+                      </View>
                     )}
-                  </Animated.View>
+                  </KeyboardAvoidingView>
                 </View>
+
+                {/* ================= COLUMN 3: PROFILE, FRIENDS & NOTIFICATIONS ================= */}
+                <View style={{ width: SCREEN_WIDTH, height: '100%', backgroundColor: colors.bg }}>
+                  <ProfileTab streak={streak} totalTriumphs={totalTriumphs} />
+                </View>
+              </Animated.ScrollView>
+
+              {/* ================= FLOATING NAVIGATION ISLAND ================= */}
+              {activeTriumph && !(isCompleted && !hasShared) && activeCommentsPostId === null && (
+                <Animated.View style={[
+                  styles.floatingNavIsland,
+                  {
+                    transform: [
+                      {
+                        translateY: islandSlideAnim
+                      }
+                    ]
+                  }
+                ]}>
+                  {/* Tree Tab */}
+                  <TouchableOpacity
+                    style={[styles.floatingNavItem, currentPage === 0 && styles.floatingNavItemActive]}
+                    onPress={() => {
+                      triggerHapticSelection();
+                      isProgrammaticScroll.current = true;
+                      pageScrollRef.current?.scrollTo({ x: 0, animated: true });
+                      setCurrentPage(0);
+                    }}
+                  >
+                    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={currentPage === 0 ? colors.accent : colors.textMuted} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <Path d="M12 2L19 9H15V15H17L12 22L7 15H9V9H5L12 2Z" />
+                    </Svg>
+                  </TouchableOpacity>
+
+                  {/* Feed Tab */}
+                  <TouchableOpacity
+                    style={[styles.floatingNavItem, currentPage === 1 && styles.floatingNavItemActive]}
+                    onPress={() => {
+                      triggerHapticSelection();
+                      isProgrammaticScroll.current = true;
+                      pageScrollRef.current?.scrollTo({ x: SCREEN_WIDTH, animated: true });
+                      setCurrentPage(1);
+                    }}
+                  >
+                    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={currentPage === 1 ? colors.accent : colors.textMuted} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <Path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                      <Polyline points="9 22 9 12 15 12 15 22" />
+                    </Svg>
+                  </TouchableOpacity>
+
+                  {/* Profile/Notifications Tab */}
+                  <TouchableOpacity
+                    style={[styles.floatingNavItem, currentPage === 2 && styles.floatingNavItemActive]}
+                    onPress={() => {
+                      triggerHapticSelection();
+                      isProgrammaticScroll.current = true;
+                      pageScrollRef.current?.scrollTo({ x: SCREEN_WIDTH * 2, animated: true });
+                      setCurrentPage(2);
+                    }}
+                  >
+                    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={currentPage === 2 ? colors.accent : colors.textMuted} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                      <Circle cx="12" cy="7" r="4" />
+                    </Svg>
+                  </TouchableOpacity>
+                </Animated.View>
               )}
-            </KeyboardAvoidingView>
-          </View>
 
-          {/* ================= COLUMN 3: PROFILE, FRIENDS & NOTIFICATIONS ================= */}
-          <View style={{ width: SCREEN_WIDTH, height: '100%', backgroundColor: '#fcfaf2' }}>
-            <ProfileTab streak={streak} totalTriumphs={totalTriumphs} />
-          </View>
-        </Animated.ScrollView>
+              {/* ================= 2/3 RIGHT SLIDE PANEL DETAILED DRAWER ================= */}
+              <Animated.View style={[styles.nodeDetailsSideDrawer, { transform: [{ translateX: panelSlide }] }]}>
+                {selectedNodeDetails && (
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.drawerHeaderNavRow}>
+                      <Text style={styles.drawerHeaderTitle}>Milestone Info</Text>
+                      <TouchableOpacity style={styles.drawerCloseCrossButton} onPress={() => { triggerHapticSelection(); closeNodePanel(); }}>
+                        <Text style={styles.closeCrossIconText}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
 
-        {/* ================= FLOATING NAVIGATION ISLAND ================= */}
-        {activeTriumph && !(isCompleted && !hasShared) && (
-          <View style={styles.floatingNavIsland}>
-            {/* Tree Tab */}
-            <TouchableOpacity
-              style={[styles.floatingNavItem, currentPage === 0 && styles.floatingNavItemActive]}
-              onPress={() => {
-                triggerHapticSelection();
-                isProgrammaticScroll.current = true;
-                pageScrollRef.current?.scrollTo({ x: 0, animated: true });
-                setCurrentPage(0);
-              }}
-            >
-              <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={currentPage === 0 ? "#a75a0c" : "#8a7767"} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                <Path d="M12 2L19 9H15V15H17L12 22L7 15H9V9H5L12 2Z" />
-              </Svg>
-            </TouchableOpacity>
+                    <ScrollView contentContainerStyle={styles.drawerContentScrollView} showsVerticalScrollIndicator={false}>
+                      <Text style={styles.drawerDateLabel}>{selectedNodeDetails.date || 'Completed Milestone'}</Text>
+                      <Text style={styles.drawerTaskStatement}>“{selectedNodeDetails.task}”</Text>
 
-            {/* Feed Tab */}
-            <TouchableOpacity
-              style={[styles.floatingNavItem, currentPage === 1 && styles.floatingNavItemActive]}
-              onPress={() => {
-                triggerHapticSelection();
-                isProgrammaticScroll.current = true;
-                pageScrollRef.current?.scrollTo({ x: SCREEN_WIDTH, animated: true });
-                setCurrentPage(1);
-              }}
-            >
-              <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={currentPage === 1 ? "#a75a0c" : "#8a7767"} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                <Path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-                <Polyline points="9 22 9 12 15 12 15 22" />
-              </Svg>
-            </TouchableOpacity>
-
-            {/* Profile/Notifications Tab */}
-            <TouchableOpacity
-              style={[styles.floatingNavItem, currentPage === 2 && styles.floatingNavItemActive]}
-              onPress={() => {
-                triggerHapticSelection();
-                isProgrammaticScroll.current = true;
-                pageScrollRef.current?.scrollTo({ x: SCREEN_WIDTH * 2, animated: true });
-                setCurrentPage(2);
-              }}
-            >
-              <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={currentPage === 2 ? "#a75a0c" : "#8a7767"} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                <Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                <Circle cx="12" cy="7" r="4" />
-              </Svg>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* ================= 2/3 RIGHT SLIDE PANEL DETAILED DRAWER ================= */}
-        <Animated.View style={[styles.nodeDetailsSideDrawer, { transform: [{ translateX: panelSlide }] }]}>
-          {selectedNodeDetails && (
-            <View style={{ flex: 1 }}>
-              <View style={styles.drawerHeaderNavRow}>
-                <Text style={styles.drawerHeaderTitle}>Milestone Info</Text>
-                <TouchableOpacity style={styles.drawerCloseCrossButton} onPress={() => { triggerHapticSelection(); closeNodePanel(); }}>
-                  <Text style={styles.closeCrossIconText}>✕</Text>
-                </TouchableOpacity>
-              </View>
-
-              <ScrollView contentContainerStyle={styles.drawerContentScrollView} showsVerticalScrollIndicator={false}>
-                <Text style={styles.drawerDateLabel}>{selectedNodeDetails.date || 'Completed Milestone'}</Text>
-                <Text style={styles.drawerTaskStatement}>“{selectedNodeDetails.task}”</Text>
-
-                <Text style={styles.sectionDividerTextLabel}>VISUAL PROOF</Text>
-                {selectedNodeDetails.photo ? (
-                  <Image source={{ uri: selectedNodeDetails.photo }} style={styles.drawerHeroImageRender} resizeMode="cover" />
-                ) : (
-                  <View style={styles.drawerImagePlaceholderBox}>
-                    <Text style={styles.placeholderBoxEmojiText}>🌱</Text>
-                    <Text style={styles.placeholderBoxNotice}>No photo attached to this specific target seed node segment.</Text>
+                      <Text style={styles.sectionDividerTextLabel}>VISUAL PROOF</Text>
+                      {selectedNodeDetails.photo ? (
+                        <Image source={{ uri: selectedNodeDetails.photo }} style={styles.drawerHeroImageRender} resizeMode="cover" />
+                      ) : (
+                        <View style={styles.drawerImagePlaceholderBox}>
+                          <Text style={styles.placeholderBoxEmojiText}>🌱</Text>
+                          <Text style={styles.placeholderBoxNotice}>No photo attached to this specific target seed node segment.</Text>
+                        </View>
+                      )}
+                    </ScrollView>
                   </View>
                 )}
-              </ScrollView>
+              </Animated.View>
+
+              {/* ================= TOMORROW'S BLUEPRINT ================= */}
+              <Animated.View style={[styles.tomorrowPageScreen, { transform: [{ translateY: tomorrowSlide }] }]} pointerEvents={isPlanningTomorrow ? 'auto' : 'none'} {...tomorrowPanResponder.panHandlers}>
+                <SafeAreaView style={{ flex: 1 }}>
+                  <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingHorizontal: 24, paddingBottom: 24 }} keyboardShouldPersistTaps="handled">
+                    {!tomorrowTaskSaved ? (
+                      <View style={[styles.cleanSetupCenteredContainer, { height: 'auto', marginBottom: 0 }]}>
+                        <View style={styles.header}>
+                          <Text style={styles.headerTitle}>One Thing Daily</Text>
+                          <Text style={styles.subtitle}>{"What's your sidequest for tomorrow?"}</Text>
+                        </View>
+                        <View style={styles.card}>
+                          <TextInput
+                            style={styles.input}
+                            placeholder="e.g., Read 10 pages, call your mum..."
+                            placeholderTextColor="#999"
+                            multiline
+                            value={tomorrowInput}
+                            onChangeText={setTomorrowInput}
+                            blurOnSubmit={true}
+                            onSubmitEditing={Keyboard.dismiss}
+                          />
+                          <TouchableOpacity style={styles.button} onPress={() => { triggerHapticSelection(); handleLockInTomorrow(); }}>
+                            <Text style={styles.buttonText}>{"Set Tomorrow's Sidequest"}</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ) : (
+                      <View style={styles.tomorrowLockedContainer}>
+                        <Text style={styles.lockedCheckmark}>🔒 Locked & Ready</Text>
+                        <Text style={styles.tomorrowLockedText}>“{tomorrowInput}”</Text>
+                        <Text style={styles.tomorrowFooterNotice}>
+                          We will activate this automatically for you when the sun comes up tomorrow morning. Great preparation!
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.changeFocusButton}
+                          onPress={() => { triggerHapticSelection(); setTomorrowTaskSaved(false); }}
+                        >
+                          <Text style={styles.changeFocusButtonText}>✏ Change focus</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    {/* Grab/Swipe indicator pill at the bottom */}
+                    <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: '#ccc', alignSelf: 'center', marginTop: 12 }} />
+                  </ScrollView>
+                </SafeAreaView>
+              </Animated.View>
             </View>
-          )}
-        </Animated.View>
 
-        {/* ================= TOMORROW'S BLUEPRINT ================= */}
-        <Animated.View style={[styles.tomorrowPageScreen, { transform: [{ translateY: tomorrowSlide }] }]} pointerEvents={isPlanningTomorrow ? 'auto' : 'none'} {...tomorrowPanResponder.panHandlers}>
-          <SafeAreaView style={{ flex: 1 }}>
-            <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingHorizontal: 24, paddingBottom: 24 }} keyboardShouldPersistTaps="handled">
-              {!tomorrowTaskSaved ? (
-                <View style={[styles.cleanSetupCenteredContainer, { height: 'auto', marginBottom: 0 }]}>
-                  <View style={styles.header}>
-                    <Text style={styles.headerTitle}>One Thing Daily</Text>
-                    <Text style={styles.subtitle}>{"What's your sidequest for tomorrow?"}</Text>
-                  </View>
-                  <View style={styles.card}>
-                    <TextInput
-                      style={styles.input}
-                      placeholder="e.g., Read 10 pages, call your mum..."
-                      placeholderTextColor="#999"
-                      multiline
-                      value={tomorrowInput}
-                      onChangeText={setTomorrowInput}
-                      blurOnSubmit={true}
-                      onSubmitEditing={Keyboard.dismiss}
-                    />
-                    <TouchableOpacity style={styles.button} onPress={() => { triggerHapticSelection(); handleLockInTomorrow(); }}>
-                      <Text style={styles.buttonText}>{"Set Tomorrow's Sidequest"}</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ) : (
-                <View style={styles.tomorrowLockedContainer}>
-                  <Text style={styles.lockedCheckmark}>🔒 Locked & Ready</Text>
-                  <Text style={styles.tomorrowLockedText}>“{tomorrowInput}”</Text>
-                  <Text style={styles.tomorrowFooterNotice}>
-                    We will activate this automatically for you when the sun comes up tomorrow morning. Great preparation!
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.changeFocusButton}
-                    onPress={() => { triggerHapticSelection(); setTomorrowTaskSaved(false); }}
-                  >
-                    <Text style={styles.changeFocusButtonText}>✏ Change focus</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-              {/* Grab/Swipe indicator pill at the bottom */}
-              <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: '#ccc', alignSelf: 'center', marginTop: 12 }} />
-            </ScrollView>
-          </SafeAreaView>
-        </Animated.View>
-      </View>
+            {/* ================= INSTAGRAM-STYLE COMMENTS BOTTOM SHEET ================= */}
+            <CommentsModal
+              ref={commentsModalRef}
+              comments={activeCommentsPost?.comments || []}
+              onAddComment={handleAddComment}
+              onDismiss={() => {
+                Keyboard.dismiss();
+                setActiveCommentsPostId(null);
+              }}
+              currentUsername={currentUsername}
+            />
 
-      {/* ================= INSTAGRAM-STYLE COMMENTS BOTTOM SHEET ================= */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={activeCommentsPostId !== null}
-        onRequestClose={dismissCommentSheet}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={{ flex: 1 }}
-        >
-          <View style={styles.modalOverlayContainer}>
-            <TouchableWithoutFeedback onPress={dismissCommentSheet}>
-              <View style={styles.modalOverlayBackdrop} />
-            </TouchableWithoutFeedback>
+            {showConfetti && <Confetti />}
 
-            <Animated.View
-              style={[
-                styles.commentSheetContainer,
-                { transform: [{ translateY: commentSheetTranslateY }] }
-              ]}
-            >
-              {/* Slide Down Drag Handle & Header */}
-              <View style={styles.commentSheetHeader} {...commentPanResponder.panHandlers}>
-                <View style={styles.sheetHandleBar} />
-                <View style={styles.headerTitleRow}>
-                  <Text style={styles.commentSheetTitle}>Comments</Text>
-                  <TouchableOpacity
-                    style={styles.commentSheetCloseButton}
-                    onPress={dismissCommentSheet}
-                  >
-                    <Text style={styles.commentSheetCloseText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Comments List */}
-              <FlatList
-                data={activeCommentsPost?.comments || []}
-                keyExtractor={(item) => item.id}
-                contentContainerStyle={styles.commentsListScroll}
-                showsVerticalScrollIndicator={false}
-                renderItem={({ item }) => (
-                  <View style={styles.commentRow}>
-                    <View style={styles.commentUserAvatar}>
-                      <Text style={styles.avatarText}>
-                        {item.user.slice(0, 2).toUpperCase()}
-                      </Text>
-                    </View>
-                    <View style={styles.commentContentBlock}>
-                      <Text style={styles.commentInlineBody}>
-                        <Text style={styles.commentUsername}>{item.user} </Text>
-                        <Text style={styles.commentBodyText}>{item.text}</Text>
-                      </Text>
-                      <Text style={styles.commentTimeText}>{item.time}</Text>
-                    </View>
-                  </View>
-                )}
-                ListEmptyComponent={
-                  <View style={styles.emptyCommentsBox}>
-                    <Text style={styles.emptyCommentsEmoji}>🌱</Text>
-                    <Text style={styles.emptyCommentsText}>No thoughts shared yet</Text>
-                    <Text style={styles.emptyCommentsSubtext}>Encourage their focus with a kind word.</Text>
-                  </View>
-                }
+            {isOrbAnimating && (
+              <OrbAnimation
+                isTreeOpen={isTreeOpen}
+                onOrbPress={openTree}
+                onReachedIcon={() => setIsTreeIconPulsating(true)}
+                onTreeAbsorbComplete={() => {
+                  setIsOrbAnimating(false);
+                  setGrowthTrigger(true);
+                  setIsTreeIconPulsating(false);
+                }}
               />
+            )}
 
-              {/* Minimalistic Add Comment Area */}
-              <View style={styles.commentInputRow}>
-                <TextInput
-                  style={styles.commentTextInput}
-                  placeholder="Add a comment..."
-                  placeholderTextColor="#a89a8c"
-                  value={commentInputText}
-                  onChangeText={setCommentInputText}
-                  multiline
-                />
-                <TouchableOpacity
-                  style={[
-                    styles.commentPostButton,
-                    !commentInputText.trim() && styles.commentPostButtonDisabled,
-                  ]}
-                  onPress={handleAddComment}
-                  disabled={!commentInputText.trim()}
-                >
-                  <Text style={styles.commentPostButtonText}>Post</Text>
-                </TouchableOpacity>
-              </View>
-            </Animated.View>
+            {showSplashOverlay && (
+              <Animated.View style={[
+                StyleSheet.absoluteFill,
+                {
+                  backgroundColor: colors.bg,
+                  opacity: splashOverlayFadeAnim,
+                  zIndex: 99999, // fully on top
+                }
+              ]}>
+                <View style={styles.cleanSetupCenteredContainer}>
+                  <View style={styles.header}>
+                    <Animated.Text
+                      style={[
+                        styles.headerTitle,
+                        {
+                          opacity: splashTitleOpacityAnim,
+                          transform: [
+                            {
+                              translateY: splashTitleProgress.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [120, 0]
+                              })
+                            },
+                            {
+                              scale: splashTitleProgress.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [1.35, 1.0]
+                              })
+                            }
+                          ]
+                        }
+                      ]}
+                    >
+                      One Thing Daily
+                    </Animated.Text>
+                  </View>
+
+                  {/* Invisible spacer matching the setup card height to position the title exactly */}
+                  <View style={[styles.card, { opacity: 0 }]} pointerEvents="none">
+                    <View style={{ minHeight: 160 }} />
+                  </View>
+                </View>
+              </Animated.View>
+            )}
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {showConfetti && <Confetti />}
-
-      {isOrbAnimating && (
-        <OrbAnimation
-          isTreeOpen={isTreeOpen}
-          onOrbPress={openTree}
-          onReachedIcon={() => setIsTreeIconPulsating(true)}
-          onTreeAbsorbComplete={() => {
-            setIsOrbAnimating(false);
-            setGrowthTrigger(true);
-            setIsTreeIconPulsating(false);
-          }}
-        />
-      )}
-    </View>
+        </BottomSheetModalProvider>
+      </GestureHandlerRootView>
+    </SafeAreaProvider>
   );
 }
-const styles = StyleSheet.create({
-  rootWrapper: { flex: 1 },
-  mainContainer: { flex: 1, backgroundColor: '#fcfaf2' }, // Soft warm ivory background
 
-  mainDashboardAnimatedWrapper: { flex: 1, width: SCREEN_WIDTH, height: '100%', backgroundColor: '#fcfaf2' },
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppContent />
+    </ThemeProvider>
+  );
+}
+
+const getStyles = (colors) => StyleSheet.create({
+  customRefreshLoaderAbsolute: {
+    position: 'absolute',
+    top: -45,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 40,
+    zIndex: 100,
+  },
+  rootWrapper: { flex: 1 },
+  mainContainer: { flex: 1, backgroundColor: colors.bg }, // Soft warm ivory background
+
+  mainDashboardAnimatedWrapper: { flex: 1, width: SCREEN_WIDTH, height: '100%', backgroundColor: colors.bg },
   keyboardAvoidingContainer: { flex: 1, width: '100%' },
   fullWidthScrollView: { flex: 1, width: '100%', paddingHorizontal: 24 },
 
@@ -1323,9 +1752,9 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: '#fcfaf2',
+    backgroundColor: colors.bg,
     zIndex: 102,
-    shadowColor: '#000',
+    shadowColor: colors.black,
     shadowOpacity: 0.1,
     shadowRadius: 20,
     elevation: 8,
@@ -1338,183 +1767,185 @@ const styles = StyleSheet.create({
     bottom: 0,
     right: 0,
     width: PANEL_WIDTH,
-    backgroundColor: 'rgba(252, 250, 242, 0.94)', // Soft warm cream glassmorphic overlay
+    backgroundColor: colors.isDark ? 'rgba(26, 19, 15, 0.94)' : 'rgba(252, 250, 242, 0.94)', // Soft warm cream glassmorphic overlay
     zIndex: 200,
     borderLeftWidth: 1,
-    borderColor: '#e8dec9',
-    shadowColor: '#2d221a',
+    borderColor: colors.border,
+    shadowColor: colors.cardShadow,
     shadowOffset: { width: -6, height: 0 },
     shadowOpacity: 0.12,
     shadowRadius: 15,
     elevation: 10,
     padding: 20
   },
-  drawerHeaderNavRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderColor: '#e8dec9', paddingBottom: 12, marginBottom: 16 },
-  drawerHeaderTitle: { fontSize: 16, fontWeight: '800', color: '#2d221a', letterSpacing: -0.3 },
-  drawerCloseCrossButton: { backgroundColor: '#f3eade', width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
-  closeCrossIconText: { fontSize: 12, fontWeight: '800', color: '#8a7767' },
+  drawerHeaderNavRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderColor: colors.border, paddingBottom: 12, marginBottom: 16 },
+  drawerHeaderTitle: { fontSize: 16, fontWeight: '800', color: colors.text, letterSpacing: -0.3 },
+  drawerCloseCrossButton: { backgroundColor: colors.borderLight, width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
+  closeCrossIconText: { fontSize: 12, fontWeight: '800', color: colors.textMuted },
   drawerContentScrollView: { paddingBottom: 32 },
-  drawerDateLabel: { fontSize: 11, fontWeight: '700', color: '#d97706', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 },
-  drawerTaskStatement: { fontSize: 15, fontWeight: '600', color: '#3b2f27', lineHeight: 22.5, marginBottom: 20 }, // 1.5x lineHeight
-  sectionDividerTextLabel: { fontSize: 10, fontWeight: '800', color: '#b59370', letterSpacing: 1.5, marginBottom: 8 },
-  drawerHeroImageRender: { width: '100%', height: 180, borderRadius: 18, backgroundColor: '#f3eade', borderWidth: 1, borderColor: '#e8dec9' },
-  drawerImagePlaceholderBox: { width: '100%', height: 150, backgroundColor: '#fcfaf2', borderRadius: 18, justifyContent: 'center', alignItems: 'center', padding: 16, borderStyle: 'dashed', borderWidth: 1.5, borderColor: '#dcd0bc' },
+  drawerDateLabel: { fontSize: 11, fontWeight: '700', color: colors.accent, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 },
+  drawerTaskStatement: { fontSize: 15, fontWeight: '600', color: colors.textMedium, lineHeight: 22.5, marginBottom: 20 }, // 1.5x lineHeight
+  sectionDividerTextLabel: { fontSize: 10, fontWeight: '800', color: colors.textSection, letterSpacing: 1.5, marginBottom: 8 },
+  drawerHeroImageRender: { width: '100%', height: 180, borderRadius: 18, backgroundColor: colors.borderLight, borderWidth: 1, borderColor: colors.border },
+  drawerImagePlaceholderBox: { width: '100%', height: 150, backgroundColor: colors.bg, borderRadius: 18, justifyContent: 'center', alignItems: 'center', padding: 16, borderStyle: 'dashed', borderWidth: 1.5, borderColor: colors.borderMuted },
   placeholderBoxEmojiText: { fontSize: 24, marginBottom: 6 },
-  placeholderBoxNotice: { fontSize: 11, color: '#8a7767', textAlign: 'center', lineHeight: 16.5 }, // 1.5x lineHeight
+  placeholderBoxNotice: { fontSize: 11, color: colors.textMuted, textAlign: 'center', lineHeight: 16.5 }, // 1.5x lineHeight
 
-  headerNavRowStyle: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#e8dec9', paddingBottom: 16, marginBottom: 0, paddingHorizontal: 24, paddingTop: Platform.OS === 'ios' ? 20 : 30 },
+  headerNavRowStyle: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: colors.border, paddingBottom: 16, marginBottom: 0, paddingHorizontal: 24, paddingTop: Platform.OS === 'ios' ? 20 : 30 },
   arrowBackButton: { paddingRight: 16, paddingVertical: 4 },
-  arrowIconText: { fontSize: 32, color: '#2d221a', fontWeight: '300' },
-  headerTitleTextCenter: { fontSize: 20, fontWeight: '800', color: '#2d221a', flex: 1, textAlign: 'center', marginRight: 28 },
+  arrowIconText: { fontSize: 32, color: colors.text, fontWeight: '300' },
+  headerTitleTextCenter: { fontSize: 20, fontWeight: '800', color: colors.text, flex: 1, textAlign: 'center', marginRight: 28 },
   headerSpacerNode: { width: 10, height: 10 },
 
-  stickyDashboardWrapper: { paddingHorizontal: 24, paddingTop: 10, paddingBottom: 12, backgroundColor: '#fcfaf2', zIndex: 10, borderBottomWidth: 1, borderColor: '#e8dec9' },
+  stickyDashboardWrapper: { paddingHorizontal: 24, paddingTop: 10, paddingBottom: 12, backgroundColor: colors.bg, zIndex: 10, borderBottomWidth: 1, borderColor: colors.border },
   inlineHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
   hamburgerIcon: { width: 30, height: 24, justifyContent: 'space-between', paddingVertical: 4 },
-  hamburgerLine: { width: 22, height: 2.5, backgroundColor: '#2d221a', borderRadius: 2 },
+  hamburgerLine: { width: 22, height: 2.5, backgroundColor: colors.text, borderRadius: 2 },
   greetingCenterWrapper: { flex: 1, alignItems: 'center' },
-  greetingText: { fontSize: 24, fontWeight: '900', color: '#2d221a', letterSpacing: -0.5 },
+  greetingText: { fontSize: 24, fontWeight: '900', color: colors.text, letterSpacing: -0.5 },
   emptySpacerRight: { width: 30 },
-  insightText: { fontSize: 13, fontWeight: '600', color: '#d97706', textAlign: 'center', marginTop: 4, lineHeight: 19.5, fontStyle: 'italic' }, // 1.5x lineHeight, warm gold/amber tone
+  insightText: { fontSize: 13, fontWeight: '600', color: colors.accent, textAlign: 'center', marginTop: 4, lineHeight: 19.5, fontStyle: 'italic' }, // 1.5x lineHeight, warm gold/amber tone
 
   cleanSetupCenteredContainer: { flex: 1, justifyContent: 'center', paddingHorizontal: 24, height: SCREEN_HEIGHT * 0.8, marginBottom: 90 },
   header: { marginBottom: 32, alignItems: 'center' },
-  headerTitle: { fontSize: 36, fontWeight: '900', color: '#d97706', letterSpacing: -0.5 }, // Intentional amber tone
-  subtitle: { fontSize: 16, color: '#8a7767', marginTop: 8 },
-  card: { backgroundColor: '#fffdf9', borderRadius: 20, padding: 20, minHeight: 160, shadowColor: '#2d221a', shadowOpacity: 0.06, shadowRadius: 12, elevation: 3, borderWidth: 1, borderColor: '#e8dec9' },
-  input: { fontSize: 18, color: '#3b2f27', textAlignVertical: 'top', minHeight: 80, marginBottom: 16, lineHeight: 27 }, // 1.5x lineHeight
-  button: { backgroundColor: '#d97706', paddingVertical: 16, borderRadius: 16, alignItems: 'center' }, // Warm amber/honey button
-  buttonText: { color: '#fcfaf2', fontSize: 16, fontWeight: 'bold' },
+  headerTitle: { fontSize: 36, fontWeight: '900', color: colors.accent, letterSpacing: -0.5 }, // Intentional amber tone
+  subtitle: { fontSize: 16, color: colors.textMuted, marginTop: 8, opacity: 0 },
+  card: { backgroundColor: colors.card, borderRadius: 20, padding: 20, minHeight: 160, shadowColor: colors.cardShadow, shadowOpacity: 0.06, shadowRadius: 12, elevation: 3, borderWidth: 1, borderColor: colors.border, opacity: 0, transform: [{ translateY: 15 }] },
+  input: { fontSize: 18, color: colors.textMedium, textAlignVertical: 'top', minHeight: 80, marginBottom: 16, lineHeight: 27 }, // 1.5x lineHeight
+  button: { backgroundColor: colors.accent, paddingVertical: 16, borderRadius: 16, alignItems: 'center' }, // Warm amber/honey button
+  buttonText: { color: colors.bg, fontSize: 16, fontWeight: 'bold' },
 
   hardwareWorkspaceFrame: { width: SCREEN_WIDTH, marginTop: 16, position: 'relative', overflow: 'hidden' },
-  inlineStatsRow: { paddingHorizontal: 12, paddingVertical: 4, backgroundColor: '#f3eade', borderRadius: 16, borderOpacity: 0.1, borderWidth: 1, borderColor: '#e8dec9' },
-  inlineStatText: { fontSize: 14, fontWeight: '800', color: '#d97706' },
-  workspaceCard: { backgroundColor: '#fffdf9', borderRadius: 24, padding: 20, borderWidth: 1, borderColor: '#e8dec9' },
-  taskHeroCard: { backgroundColor: '#f7edd7', borderRadius: 31, paddingVertical: 42, paddingHorizontal: 36, borderWidth: 1.3, borderColor: '#ebd5b0', shadowColor: '#d97706', shadowOpacity: 0.12, shadowRadius: 42, shadowOffset: { width: 0, height: 23 }, elevation: 13, height: SCREEN_HEIGHT * 0.57, justifyContent: 'space-between', overflow: 'hidden', marginHorizontal: 24, marginBottom: 75, marginTop: 8 },
-  holdCompleteButton: { backgroundColor: '#a75a0c', borderRadius: 20, paddingVertical: 22, paddingHorizontal: 20, alignItems: 'center', justifyContent: 'center', marginTop: 16, shadowColor: '#a75a0c', shadowOpacity: 0.24, shadowRadius: 16, shadowOffset: { width: 0, height: 10 }, elevation: 8, width: '100%' },
-  holdCompleteButtonActive: { backgroundColor: '#8c4b07' },
+  inlineStatsRow: { paddingHorizontal: 12, paddingVertical: 4, backgroundColor: colors.borderLight, borderRadius: 16, borderOpacity: 0.1, borderWidth: 1, borderColor: colors.border },
+  inlineStatText: { fontSize: 14, fontWeight: '800', color: colors.accent },
+  workspaceCard: { backgroundColor: colors.card, borderRadius: 24, padding: 20, borderWidth: 1, borderColor: colors.border },
+  taskHeroCard: { backgroundColor: colors.isDark ? colors.cardInner : '#f7edd7', borderRadius: 31, paddingVertical: 42, paddingHorizontal: 36, borderWidth: 1.3, borderColor: colors.cardBorder, shadowColor: colors.accent, shadowOpacity: 0.12, shadowRadius: 42, shadowOffset: { width: 0, height: 23 }, elevation: 13, height: SCREEN_HEIGHT * 0.57, justifyContent: 'space-between', overflow: 'hidden', marginHorizontal: 24, marginBottom: 75, marginTop: 8 },
+  holdCompleteButton: { backgroundColor: colors.accentDark, borderRadius: 20, paddingVertical: 22, paddingHorizontal: 20, alignItems: 'center', justifyContent: 'center', marginTop: 16, shadowColor: colors.accentDark, shadowOpacity: 0.24, shadowRadius: 16, shadowOffset: { width: 0, height: 10 }, elevation: 8, width: '100%' },
+  holdCompleteButtonActive: { backgroundColor: colors.isDark ? '#7c2d12' : '#8c4b07' },
   holdProgressTrack: { marginTop: 16, width: '100%', height: 8, backgroundColor: 'rgba(255,255,255,0.22)', borderRadius: 999, overflow: 'hidden' },
-  holdProgressFill: { height: '100%', backgroundColor: '#fcfaf2', borderRadius: 999 },
-  activeTaskFooter: { fontSize: 13, color: '#8a7767', textAlign: 'center', marginTop: 18, lineHeight: 19.5 }, // 1.5x lineHeight
+  holdProgressFill: { height: '100%', backgroundColor: colors.bg, borderRadius: 999 },
+  activeTaskFooter: { fontSize: 13, color: colors.textMuted, textAlign: 'center', marginTop: 18, lineHeight: 19.5 }, // 1.5x lineHeight
   celebrationFullScreenOverlay: { backgroundColor: 'transparent', borderRadius: 0, padding: 0, borderWidth: 0, zIndex: 999 },
-  celebrationCard: { backgroundColor: '#fffdf9', borderRadius: 24, padding: 28, borderWidth: 1, borderColor: '#e8dec9', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 20, shadowOffset: { width: 0, height: 10 }, elevation: 6, alignItems: 'center', justifyContent: 'center' },
-  activeSectionLabel: { fontSize: 14, fontWeight: '800', color: '#d97706', letterSpacing: 1.95, marginBottom: 16, textAlign: 'center' },
-  taskHeroTag: { textAlign: 'center', fontSize: 17, fontWeight: '700', color: '#a75a0c', marginBottom: 16, letterSpacing: 1.43 },
-  triumphDisplayFormat: { fontSize: 34, fontWeight: '800', color: '#2d221a', textAlign: 'center', lineHeight: 51, letterSpacing: -0.65, fontStyle: 'italic' }, // 1.5x lineHeight
+  celebrationCard: { backgroundColor: colors.card, borderRadius: 24, padding: 28, borderWidth: 1, borderColor: colors.border, shadowColor: colors.black, shadowOpacity: 0.08, shadowRadius: 20, shadowOffset: { width: 0, height: 10 }, elevation: 6, alignItems: 'center', justifyContent: 'center' },
+  activeSectionLabel: { fontSize: 14, fontWeight: '800', color: colors.accent, letterSpacing: 1.95, marginBottom: 16, textAlign: 'center' },
+  taskHeroTag: { textAlign: 'center', fontSize: 17, fontWeight: '700', color: colors.accentDark, marginBottom: 16, letterSpacing: 1.43 },
+  triumphDisplayFormat: { fontSize: 34, fontWeight: '800', color: colors.text, textAlign: 'center', lineHeight: 51, letterSpacing: -0.65, fontStyle: 'italic' }, // 1.5x lineHeight
   taskTextWrapper: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 26 },
-  quoteMarkOpen: { fontSize: 83, fontWeight: '800', color: '#ebd5b0', opacity: 0.4, marginBottom: -20, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif' },
-  quoteMarkClose: { fontSize: 83, fontWeight: '800', color: '#ebd5b0', opacity: 0.4, marginTop: -20, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif' },
-  holdInstructionText: { fontSize: 17, fontWeight: '600', color: '#d97706', textAlign: 'center', marginBottom: 31, letterSpacing: 0.65, textTransform: 'uppercase' },
+  quoteMarkOpen: { fontSize: 83, fontWeight: '800', color: colors.cardBorder, opacity: 0.4, marginBottom: -20, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif' },
+  quoteMarkClose: { fontSize: 83, fontWeight: '800', color: colors.cardBorder, opacity: 0.4, marginTop: -20, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif' },
+  holdInstructionText: { fontSize: 17, fontWeight: '600', color: colors.accent, textAlign: 'center', marginBottom: 31, letterSpacing: 0.65, textTransform: 'uppercase' },
   sliderProgressTrack: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 16, backgroundColor: 'rgba(217, 119, 6, 0.15)', overflow: 'hidden' },
-  sliderProgressFill: { height: '100%', backgroundColor: '#d97706' },
-  activeTaskMood: { fontSize: 15, color: '#8a7767', textAlign: 'center', marginBottom: 22, lineHeight: 22.5 }, // 1.5x lineHeight
-  completeButtonBadge: { backgroundColor: '#a75a0c', paddingVertical: 18, borderRadius: 18, alignItems: 'center', marginHorizontal: 16 },
-  completeButtonBadgeText: { color: '#fcfaf2', fontSize: 16, fontWeight: '800' },
+  sliderProgressFill: { height: '100%', backgroundColor: colors.accent },
+  activeTaskMood: { fontSize: 15, color: colors.textMuted, textAlign: 'center', marginBottom: 22, lineHeight: 22.5 }, // 1.5x lineHeight
+  completeButtonBadge: { backgroundColor: colors.accentDark, paddingVertical: 18, borderRadius: 18, alignItems: 'center', marginHorizontal: 16 },
+  completeButtonBadgeText: { color: colors.bg, fontSize: 16, fontWeight: '800' },
   celebrationBadge: { fontSize: 38, marginBottom: 16 },
-  celebrationBody: { color: '#8a7767', fontSize: 14, textAlign: 'center', marginBottom: 20, lineHeight: 21 }, // 1.5x lineHeight
-  celebrationImpactContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24, backgroundColor: '#fcfaf2' },
+  celebrationBody: { color: colors.textMuted, fontSize: 14, textAlign: 'center', marginBottom: 20, lineHeight: 21 }, // 1.5x lineHeight
+  celebrationImpactContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24, backgroundColor: colors.bg },
   celebrationBadgeHuge: { fontSize: 120, marginBottom: 24, lineHeight: 140 },
-  celebrationTitleHuge: { fontSize: 56, fontWeight: '900', color: '#2d221a', textAlign: 'center', marginBottom: 12, lineHeight: 64, letterSpacing: -1 },
-  celebrationSubtitleLarge: { fontSize: 18, color: '#8a7767', textAlign: 'center', marginBottom: 40, lineHeight: 27, maxWidth: '85%' }, // 1.5x lineHeight
+  celebrationTitleHuge: { fontSize: 56, fontWeight: '900', color: colors.text, textAlign: 'center', marginBottom: 12, lineHeight: 64, letterSpacing: -1 },
+  celebrationSubtitleLarge: { fontSize: 18, color: colors.textMuted, textAlign: 'center', marginBottom: 40, lineHeight: 27, maxWidth: '85%' }, // 1.5x lineHeight
   celebrationMetricsRow: { flexDirection: 'row', alignItems: 'center', gap: 0, marginTop: 32 },
   metricCell: { flex: 1, alignItems: 'center', paddingVertical: 16 },
-  metricValue: { fontSize: 42, fontWeight: '900', color: '#d97706', marginBottom: 4 },
-  metricLabel: { fontSize: 13, color: '#8a7767', fontWeight: '600', letterSpacing: 0.5, textTransform: 'uppercase' },
-  metricDivider: { width: 1, height: 60, backgroundColor: 'rgba(45, 34, 26, 0.1)' },
+  metricValue: { fontSize: 42, fontWeight: '900', color: colors.accent, marginBottom: 4 },
+  metricLabel: { fontSize: 13, color: colors.textMuted, fontWeight: '600', letterSpacing: 0.5, textTransform: 'uppercase' },
+  metricDivider: { width: 1, height: 60, backgroundColor: colors.isDark ? 'rgba(245, 238, 220, 0.1)' : 'rgba(45, 34, 26, 0.1)' },
 
-  celebrationPhotoContainer: { flex: 1, justifyContent: 'flex-start', paddingTop: 60, backgroundColor: '#fcfaf2' },
+  celebrationPhotoContainer: { flex: 1, justifyContent: 'flex-start', paddingTop: 60, backgroundColor: colors.bg },
   photoSelectionScroll: { paddingHorizontal: 24, paddingBottom: 40 },
-  photoPromptTitle: { fontSize: 28, fontWeight: '900', color: '#2d221a', textAlign: 'center', marginBottom: 8 },
-  photoPromptSubtitle: { fontSize: 14, color: '#8a7767', textAlign: 'center', marginBottom: 32, lineHeight: 21 }, // 1.5x lineHeight
+  photoPromptTitle: { fontSize: 28, fontWeight: '900', color: colors.text, textAlign: 'center', marginBottom: 8 },
+  photoPromptSubtitle: { fontSize: 14, color: colors.textMuted, textAlign: 'center', marginBottom: 32, lineHeight: 21 }, // 1.5x lineHeight
   photoGridRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 32 },
-  photoGridItem: { width: (SCREEN_WIDTH - 72) / 2, height: 140, borderRadius: 18, overflow: 'hidden', borderWidth: 2, borderColor: '#e8dec9', position: 'relative' },
-  photoGridItemSelected: { borderColor: '#d97706', borderWidth: 3, shadowColor: '#d97706', shadowOpacity: 0.3, shadowRadius: 8, elevation: 5 },
+  photoGridItem: { width: (SCREEN_WIDTH - 72) / 2, height: 140, borderRadius: 18, overflow: 'hidden', borderWidth: 2, borderColor: colors.border, position: 'relative' },
+  photoGridItemSelected: { borderColor: colors.accent, borderWidth: 3, shadowColor: colors.accent, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5 },
   photoGridImage: { width: '100%', height: '100%' },
-  photoCheckmark: { position: 'absolute', top: 0, right: 0, width: 36, height: 36, backgroundColor: '#d97706', borderRadius: 18, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4 },
-  photoCheckmarkText: { color: '#fcfaf2', fontSize: 18, fontWeight: 'bold' },
-  shareNowButton: { backgroundColor: '#d97706', paddingVertical: 18, borderRadius: 18, alignItems: 'center', marginBottom: 12, shadowColor: '#d97706', shadowOpacity: 0.3, shadowRadius: 12, elevation: 5 },
-  shareNowButtonText: { color: '#fcfaf2', fontSize: 16, fontWeight: '800', letterSpacing: 0.5 },
-  skipSharingButton: { backgroundColor: '#f3eade', paddingVertical: 16, borderRadius: 18, alignItems: 'center', borderWidth: 1.5, borderColor: '#dcd0bc' },
-  skipSharingButtonText: { color: '#8a7767', fontSize: 15, fontWeight: '600' },
+  photoCheckmark: { position: 'absolute', top: 0, right: 0, width: 36, height: 36, backgroundColor: colors.accent, borderRadius: 18, justifyContent: 'center', alignItems: 'center', shadowColor: colors.black, shadowOpacity: 0.2, shadowRadius: 4 },
+  photoCheckmarkText: { color: colors.bg, fontSize: 18, fontWeight: 'bold' },
+  shareNowButton: { backgroundColor: colors.accent, paddingVertical: 18, borderRadius: 18, alignItems: 'center', marginBottom: 12, shadowColor: colors.accent, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5 },
+  shareNowButtonText: { color: colors.bg, fontSize: 16, fontWeight: '800', letterSpacing: 0.5 },
+  skipSharingButton: { backgroundColor: colors.borderLight, paddingVertical: 16, borderRadius: 18, alignItems: 'center', borderWidth: 1.5, borderColor: colors.borderMuted },
+  skipSharingButtonText: { color: colors.textMuted, fontSize: 15, fontWeight: '600' },
 
   celebrationEmoji: { fontSize: 26, textAlign: 'center', marginBottom: 4 },
-  celebrationTitle: { fontSize: 20, fontWeight: '900', color: '#d97706', textAlign: 'center' },
-  celebrationSubtitle: { fontSize: 12, color: '#8a7767', textAlign: 'center', marginTop: 2, marginBottom: 12 },
+  celebrationTitle: { fontSize: 20, fontWeight: '900', color: colors.accent, textAlign: 'center' },
+  celebrationSubtitle: { fontSize: 12, color: colors.textMuted, textAlign: 'center', marginTop: 2, marginBottom: 12 },
   photoTrayRow: { flexDirection: 'row', gap: 8, marginBottom: 16, justifyContent: 'center' },
-  photoSelectionPill: { flex: 1, backgroundColor: '#f3eade', borderRadius: 12, padding: 6, alignItems: 'center', borderWidth: 2, borderColor: 'transparent' },
-  photoSelectionPillActive: { borderColor: '#d97706', backgroundColor: '#fffdf9' },
+  photoSelectionPill: { flex: 1, backgroundColor: colors.borderLight, borderRadius: 12, padding: 6, alignItems: 'center', borderWidth: 2, borderColor: 'transparent' },
+  photoSelectionPillActive: { borderColor: colors.accent, backgroundColor: colors.card },
   trayThumbImage: { width: '100%', height: 42, borderRadius: 8, marginBottom: 4 },
-  photoPillText: { fontSize: 10, color: '#8a7767', fontWeight: '600' },
-  photoPillTextActive: { color: '#d97706', fontWeight: '700' },
-  shareTimelineButton: { backgroundColor: '#d97706', paddingVertical: 14, borderRadius: 18, alignItems: 'center' },
-  shareTimelineButtonText: { color: '#fcfaf2', fontSize: 15, fontWeight: '700' },
+  photoPillText: { fontSize: 10, color: colors.textMuted, fontWeight: '600' },
+  photoPillTextActive: { color: colors.accent, fontWeight: '700' },
+  shareTimelineButton: { backgroundColor: colors.accent, paddingVertical: 14, borderRadius: 18, alignItems: 'center' },
+  shareTimelineButtonText: { color: colors.bg, fontSize: 15, fontWeight: '700' },
 
   feedHeaderRowBypass: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, marginBottom: 12, paddingHorizontal: 24 },
-  feedSectionLabel: { fontSize: 11, fontWeight: '800', color: '#b59370', letterSpacing: 1.5 },
-  nextIntentionPill: { backgroundColor: '#f3eade', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  resetLinkText: { fontSize: 12, color: '#d97706', fontWeight: '800' },
+  feedSectionLabel: { fontSize: 11, fontWeight: '800', color: colors.textSection, letterSpacing: 1.5 },
+  nextIntentionPill: { backgroundColor: colors.borderLight, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
+  resetLinkText: { fontSize: 12, color: colors.accent, fontWeight: '800' },
 
-  instagramPostCard: { backgroundColor: '#fffdf9', borderRadius: 24, marginBottom: 20, overflow: 'hidden', borderWidth: 1, borderColor: '#dcd0bc', shadowColor: '#2d221a', shadowOpacity: 0.05, shadowRadius: 10, elevation: 3 }, // Slightly darker beige outline
-  postCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderColor: '#e8dec9' },
-  postCardFooter: { padding: 16 },
-  postUserBadge: { fontSize: 14, fontWeight: '800', color: '#3b2f27' },
-  postActionText: { fontSize: 13, color: '#8a7767', marginTop: 2, lineHeight: 18, fontStyle: 'italic' }, // Same color as greeting quote
-  postTimeLabel: { fontSize: 12, color: '#8a7767' },
-  postCaptionText: { fontSize: 14, color: '#3b2f27', lineHeight: 21, marginBottom: 8 },
-  postImageWrapper: { position: 'relative', width: '100%', height: 420 },
-  postHeroImage: { width: '100%', height: '100%', backgroundColor: '#f3eade' },
-  bottomOverlayContainer: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 16, backgroundColor: 'rgba(34, 25, 18, 0.4)' }, // Soft translucent backing
+  instagramPostCard: { backgroundColor: colors.card, height: 480, borderRadius: 24, marginBottom: 20, overflow: 'hidden', borderWidth: 1, borderColor: colors.borderMuted, shadowColor: colors.cardShadow, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3 }, // Slightly darker beige outline
+  postHeroImage: { width: '100%', height: '100%', backgroundColor: colors.borderLight },
+  feedPostAvatar: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
+
+  // Avatar + name overlaid at the top of the image
+  postAvatarTopOverlay: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 16, paddingBottom: 16, zIndex: 2, backgroundColor: 'transparent' },
+  postUserBadgeOverlay: { fontSize: 15, fontWeight: '800', color: '#fcfaf2', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
+  postTimeLabelOverlay: { fontSize: 12, color: 'rgba(252,250,242,0.85)', marginTop: 1, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
+
+  // Task text overlay box at the bottom of the image (CameraCapture style)
+  postBottomOverlayBox: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(18, 13, 9, 0.85)', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 16, zIndex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  postTaskOverlayLabel: { fontSize: 11, fontWeight: '800', color: '#d97706', letterSpacing: 1.2, marginBottom: 4, textTransform: 'uppercase' },
+  postTaskOverlayText: { fontSize: 18, fontWeight: '700', color: '#ffffff', lineHeight: 24, fontStyle: 'italic' },
+
+  // Footer row inside the dark overlay
+  postCardFooterActions: { flexDirection: 'row', gap: 14, alignItems: 'center' },
+
   centerHeartOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', zIndex: 5 },
   overlayHeartText: { fontSize: 80, textShadowColor: 'rgba(0,0,0,0.2)', textShadowOffset: { width: 0, height: 4 }, textShadowRadius: 8 },
-  reelsActionBar: { flexDirection: 'row', gap: 16, alignItems: 'center', marginBottom: 6 },
   actionIconButton: { padding: 4 },
-  actionIconSymbol: { fontSize: 26, color: '#2d221a' },
+  actionIconSymbol: { fontSize: 26, color: colors.text },
   actionIconSymbolLiked: { color: '#ef4444' },
-  socialProofRow: { marginTop: 2 },
-  likedByText: { fontSize: 13, color: '#8a7767' },
-  commentProofText: { color: '#b59370' },
-  boldUsername: { fontWeight: '800', color: '#3b2f27' },
   likedByTextOverlaid: { fontSize: 13, color: '#fcfaf2', textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
   boldUsernameOverlaid: { fontWeight: '800', color: '#fcfaf2' },
   commentProofTextOverlaid: { color: '#ebd5b0' },
 
   inputFormGroup: { paddingTop: 4 },
-  tomorrowDescription: { fontSize: 14, color: '#8a7767', lineHeight: 21, marginBottom: 20 }, // 1.5x lineHeight
-  tomorrowTextInput: { backgroundColor: '#fffdf9', borderRadius: 18, paddingHorizontal: 16, fontSize: 16, color: '#3b2f27', height: 54, borderWidth: 1, borderColor: '#e8dec9', marginBottom: 20 },
-  tomorrowLockButton: { backgroundColor: '#d97706', paddingVertical: 16, borderRadius: 18, alignItems: 'center' }, // Warm amber lock button
-  tomorrowLockButtonText: { color: '#fcfaf2', fontSize: 16, fontWeight: '700' },
+  tomorrowDescription: { fontSize: 14, color: colors.textMuted, lineHeight: 21, marginBottom: 20 }, // 1.5x lineHeight
+  tomorrowTextInput: { backgroundColor: colors.card, borderRadius: 18, paddingHorizontal: 16, fontSize: 16, color: colors.textMedium, height: 54, borderWidth: 1, borderColor: colors.border, marginBottom: 20 },
+  tomorrowLockButton: { backgroundColor: colors.accent, paddingVertical: 16, borderRadius: 18, alignItems: 'center' }, // Warm amber lock button
+  tomorrowLockButtonText: { color: colors.bg, fontSize: 16, fontWeight: '700' },
   tomorrowLockedContainer: { alignItems: 'center', paddingVertical: 44 },
-  lockedCheckmark: { fontSize: 16, fontWeight: '800', color: '#d97706', backgroundColor: '#f3eade', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: '#e8dec9' },
-  tomorrowLockedText: { fontSize: 22, fontWeight: '700', color: '#3b2f27', textAlign: 'center', lineHeight: 33, marginBottom: 12, fontStyle: 'italic' }, // 1.5x lineHeight
-  tomorrowFooterNotice: { fontSize: 12, color: '#8a7767', textAlign: 'center', paddingHorizontal: 16, lineHeight: 18, marginBottom: 20 }, // 1.5x lineHeight
-  changeFocusButton: { marginTop: 4, paddingVertical: 10, paddingHorizontal: 20, borderRadius: 20, borderWidth: 1.5, borderColor: '#dcd0bc', backgroundColor: '#fcfaf2' },
-  changeFocusButtonText: { fontSize: 14, fontWeight: '600', color: '#8a7767' },
+  lockedCheckmark: { fontSize: 16, fontWeight: '800', color: colors.accent, backgroundColor: colors.borderLight, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: colors.border },
+  tomorrowLockedText: { fontSize: 22, fontWeight: '700', color: colors.textMedium, textAlign: 'center', lineHeight: 33, marginBottom: 12, fontStyle: 'italic' }, // 1.5x lineHeight
+  tomorrowFooterNotice: { fontSize: 12, color: colors.textMuted, textAlign: 'center', paddingHorizontal: 16, lineHeight: 18, marginBottom: 20 }, // 1.5x lineHeight
+  changeFocusButton: { marginTop: 4, paddingVertical: 10, paddingHorizontal: 20, borderRadius: 20, borderWidth: 1.5, borderColor: colors.borderMuted, backgroundColor: colors.bg },
+  changeFocusButtonText: { fontSize: 14, fontWeight: '600', color: colors.textMuted },
 
   // ================= 3-COLUMN LAYOUT & NAVIGATION ISLAND STYLES =================
-  rightPageScrollView: { flex: 1, backgroundColor: '#fcfaf2' },
-  profileHeaderSection: { flexDirection: 'row', alignItems: 'center', padding: 24, borderBottomWidth: 1, borderColor: '#e8dec9' },
+  rightPageScrollView: { flex: 1, backgroundColor: colors.bg },
+  profileHeaderSection: { flexDirection: 'row', alignItems: 'center', padding: 24, borderBottomWidth: 1, borderColor: colors.border },
   avatarContainer: { position: 'relative' },
-  profileAvatar: { width: 72, height: 72, borderRadius: 36, borderWidth: 2, borderColor: '#a75a0c' },
+  profileAvatar: { width: 72, height: 72, borderRadius: 36, borderWidth: 2, borderColor: colors.accentDark },
   profileDetails: { flex: 1, marginLeft: 16 },
-  profileUsername: { fontSize: 18, fontWeight: '800', color: '#2d221a' },
-  profileBio: { fontSize: 13, color: '#8a7767', marginTop: 4, lineHeight: 18 },
-  notificationIconButton: { position: 'relative', width: 44, height: 44, borderRadius: 22, backgroundColor: '#f3eade', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#e8dec9' },
-  notificationBadge: { position: 'absolute', top: -4, right: -4, backgroundColor: '#ef4444', minWidth: 18, height: 18, borderRadius: 9, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 4 },
-  notificationBadgeText: { color: '#ffffff', fontSize: 10, fontWeight: '800' },
-  profileStatsRow: { flexDirection: 'row', paddingVertical: 16, backgroundColor: '#fffdf9', borderBottomWidth: 1, borderColor: '#e8dec9' },
+  profileUsername: { fontSize: 18, fontWeight: '800', color: colors.text },
+  profileBio: { fontSize: 13, color: colors.textMuted, marginTop: 4, lineHeight: 18 },
+  notificationIconButton: { position: 'relative', width: 44, height: 44, borderRadius: 22, backgroundColor: colors.borderLight, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: colors.border },
+  notificationBadge: { position: 'absolute', top: -4, right: -4, backgroundColor: colors.badgeRed, minWidth: 18, height: 18, borderRadius: 9, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 4 },
+  notificationBadgeText: { color: colors.white, fontSize: 10, fontWeight: '800' },
+  profileStatsRow: { flexDirection: 'row', paddingVertical: 16, backgroundColor: colors.card, borderBottomWidth: 1, borderColor: colors.border },
   profileStatItem: { flex: 1, alignItems: 'center' },
-  profileStatNumber: { fontSize: 20, fontWeight: '800', color: '#a75a0c' },
-  profileStatLabel: { fontSize: 11, color: '#8a7767', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 2 },
+  profileStatNumber: { fontSize: 20, fontWeight: '800', color: colors.accentDark },
+  profileStatLabel: { fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 2 },
   friendsActivitySection: { padding: 24 },
-  friendsActivityTitle: { fontSize: 12, fontWeight: '800', color: '#b59370', letterSpacing: 1.5, marginBottom: 16, textTransform: 'uppercase' },
-  friendActivityCard: { flexDirection: 'row', backgroundColor: '#fffdf9', borderRadius: 20, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#e8dec9', alignItems: 'center' },
-  friendAvatar: { width: 48, height: 48, borderRadius: 24, borderWidth: 1, borderColor: '#dcd0bc' },
+  friendsActivityTitle: { fontSize: 12, fontWeight: '800', color: colors.textSection, letterSpacing: 1.5, marginBottom: 16, textTransform: 'uppercase' },
+  friendActivityCard: { flexDirection: 'row', backgroundColor: colors.card, borderRadius: 20, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
+  friendAvatar: { width: 48, height: 48, borderRadius: 24, borderWidth: 1, borderColor: colors.borderMuted },
   friendCardContent: { flex: 1, marginLeft: 12 },
   friendNameRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  friendName: { fontSize: 14, fontWeight: '800', color: '#3b2f27' },
-  friendTime: { fontSize: 11, color: '#8a7767' },
-  friendTriumphText: { fontSize: 13, color: '#8a7767', marginTop: 4, lineHeight: 18, fontStyle: 'italic' },
-  friendHighFiveButton: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#f3eade', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
+  friendName: { fontSize: 14, fontWeight: '800', color: colors.textMedium },
+  friendTime: { fontSize: 11, color: colors.textMuted },
+  friendTriumphText: { fontSize: 13, color: colors.textMuted, marginTop: 4, lineHeight: 18, fontStyle: 'italic' },
+  friendHighFiveButton: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.borderLight, justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   friendHighFiveEmoji: { fontSize: 16 },
 
   floatingNavIsland: {
@@ -1524,13 +1955,13 @@ const styles = StyleSheet.create({
     right: 24,
     height: 64,
     borderRadius: 32,
-    backgroundColor: 'rgba(252, 250, 242, 0.65)',
+    backgroundColor: colors.isDark ? 'rgba(10, 7, 5, 0.96)' : 'rgba(252, 250, 242, 0.65)',
     borderWidth: 1.5,
-    borderColor: 'rgba(232, 222, 201, 0.45)',
+    borderColor: colors.isDark ? '#3d2e22' : 'rgba(232, 222, 201, 0.45)',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    shadowColor: '#2d221a',
+    shadowColor: colors.cardShadow,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.12,
     shadowRadius: 16,
@@ -1545,28 +1976,30 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   floatingNavItemActive: {
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     borderWidth: 1,
-    borderColor: '#dcd0bc'
+    borderColor: colors.borderMuted
   },
   modalOverlayContainer: {
     flex: 1,
     justifyContent: 'flex-end',
+    paddingTop: Platform.OS === 'ios' ? 60 : 40,
   },
   modalOverlayBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(28, 22, 17, 0.16)', // Extremely soft warm dim overlay
+    backgroundColor: colors.modalOverlay,
   },
   commentSheetContainer: {
-    backgroundColor: '#fffdf9', // Crisp soft warm ivory sheet background
+    backgroundColor: colors.card, // Crisp soft warm ivory sheet background
     borderTopLeftRadius: 32,
     borderTopRightRadius: 32,
     height: SCREEN_HEIGHT * 0.7,
+    flexShrink: 1, // Allows the sheet to shrink when keyboard opens
     width: '100%',
     paddingBottom: Platform.OS === 'ios' ? 24 : 12,
     borderTopWidth: 1.5,
-    borderTopColor: '#f0e6d2',
-    shadowColor: '#2d221a',
+    borderTopColor: colors.divider,
+    shadowColor: colors.cardShadow,
     shadowOffset: { width: 0, height: -6 },
     shadowOpacity: 0.07,
     shadowRadius: 16,
@@ -1576,7 +2009,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#e6dbcd',
+    backgroundColor: colors.isDark ? '#4d3a2b' : '#e6dbcd',
     marginBottom: 10,
   },
   commentSheetHeader: {
@@ -1584,7 +2017,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0e6d2',
+    borderBottomColor: colors.divider,
     alignItems: 'center',
   },
   headerTitleRow: {
@@ -1596,21 +2029,21 @@ const styles = StyleSheet.create({
   commentSheetTitle: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#2d221a',
+    color: colors.text,
     letterSpacing: -0.3,
   },
   commentSheetCloseButton: {
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     justifyContent: 'center',
     alignItems: 'center',
   },
   commentSheetCloseText: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#8a7767',
+    color: colors.textMuted,
   },
   commentsListScroll: {
     paddingHorizontal: 20,
@@ -1627,17 +2060,17 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#f5ecd8',
+    backgroundColor: colors.borderLight,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
     borderWidth: 1,
-    borderColor: '#e8dec9',
+    borderColor: colors.border,
   },
   avatarText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#a75a0c',
+    color: colors.accentDark,
   },
   commentContentBlock: {
     flex: 1,
@@ -1646,18 +2079,18 @@ const styles = StyleSheet.create({
   commentInlineBody: {
     fontSize: 14,
     lineHeight: 19,
-    color: '#2d221a',
+    color: colors.text,
   },
   commentUsername: {
     fontWeight: '700',
-    color: '#2d221a',
+    color: colors.text,
   },
   commentBodyText: {
-    color: '#3b2f27',
+    color: colors.textMedium,
   },
   commentTimeText: {
     fontSize: 11,
-    color: '#a39081',
+    color: colors.textMuted,
     marginTop: 4,
   },
   emptyCommentsBox: {
@@ -1672,12 +2105,12 @@ const styles = StyleSheet.create({
   emptyCommentsText: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#2d221a',
+    color: colors.text,
     marginBottom: 4,
   },
   emptyCommentsSubtext: {
     fontSize: 12,
-    color: '#8a7767',
+    color: colors.textMuted,
     textAlign: 'center',
   },
   commentInputRow: {
@@ -1686,20 +2119,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderTopWidth: 1,
-    borderTopColor: '#f0e6d2',
-    backgroundColor: '#fffdf9',
+    borderTopColor: colors.divider,
+    backgroundColor: colors.card,
   },
   commentTextInput: {
     flex: 1,
-    backgroundColor: '#fcfaf2',
+    backgroundColor: colors.bg,
     borderWidth: 1,
-    borderColor: '#ebd5b0',
+    borderColor: colors.cardBorder,
     borderRadius: 22,
     paddingHorizontal: 16,
     paddingTop: 10,
     paddingBottom: 10,
     fontSize: 14,
-    color: '#3b2f27',
+    color: colors.textMedium,
     maxHeight: 100,
   },
   commentPostButton: {
@@ -1711,7 +2144,7 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
   commentPostButtonText: {
-    color: '#d97706',
+    color: colors.accent,
     fontSize: 15,
     fontWeight: '700',
   }

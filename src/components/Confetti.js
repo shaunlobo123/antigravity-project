@@ -35,7 +35,7 @@ export default function Confetti() {
   }, []);
 
   return (
-    <View style={{ position: 'absolute', top: 0, left: 0, width: SCREEN_WIDTH, height: SCREEN_HEIGHT, overflow: 'hidden', pointerEvents: 'none', zIndex: 1 }}>
+    <View style={{ position: 'absolute', top: 0, left: 0, width: SCREEN_WIDTH, height: SCREEN_HEIGHT, overflow: 'hidden', pointerEvents: 'none', zIndex: 9999 }}>
       {confettiPieces.map((piece) => {
         const yTranslate = piece.animValue.interpolate({
           inputRange: [0, 1],

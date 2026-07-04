@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useTheme } from '../context/ThemeContext';
 import {
   StyleSheet,
   Text,
@@ -18,6 +19,7 @@ import {
   TouchableWithoutFeedback,
   Keyboard,
   StatusBar,
+  PanResponder,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -26,17 +28,18 @@ import * as Haptics from 'expo-haptics';
 import Svg, { Path, Circle, Line } from 'react-native-svg';
 import { supabase } from '../utils/supabase';
 import { sendFriendRequest, acceptFriendRequest } from '../services/friendService';
+import GoldenTree from './GoldenTree';
 
 const DEFAULT_AVATAR = require('../../assets/default_avatar.png');
 
 // ─── Icon Components ──────────────────────────────────────────────────────────
-const BellIcon = ({ color = '#3e2723', size = 22, badgeCount = 0 }) => (
+const BellIcon = ({ color = '#3e2723', size = 22, badgeCount = 0, styles }) => (
   <View>
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
       <Path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
       <Path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </Svg>
-    {badgeCount > 0 && (
+    {badgeCount > 0 && styles && (
       <View style={styles.badge}>
         <Text style={styles.badgeText}>{badgeCount > 9 ? '9+' : badgeCount}</Text>
       </View>
@@ -58,10 +61,23 @@ const PlusIcon = ({ color = '#fff', size = 24 }) => (
   </Svg>
 );
 
-const CheckIcon = ({ color = '#22c55e', size = 16 }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M20 6L9 17l-5-5" />
-  </Svg>
+
+// Bell inside a circle — used to nudge friends to complete their daily challenge
+const BellCircleIcon = ({ color = '#d97706', size = 32 }) => (
+  <View style={{
+    width: size,
+    height: size,
+    borderRadius: size / 2,
+    borderWidth: 1.5,
+    borderColor: color,
+    alignItems: 'center',
+    justifyContent: 'center',
+  }}>
+    <Svg width={size * 0.52} height={size * 0.52} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+      <Path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </Svg>
+  </View>
 );
 
 const ChevronRight = ({ color = '#bba98e', size = 16 }) => (
@@ -106,6 +122,10 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
   const [notifVisible, setNotifVisible] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [addFriendVisible, setAddFriendVisible] = useState(false);
+  const [viewFriendProfile, setViewFriendProfile] = useState(null);
+  const [friendStats, setFriendStats] = useState(null);
+  const [friendStatsLoading, setFriendStatsLoading] = useState(false);
+  const [friendPosts, setFriendPosts] = useState([]);
 
   // Add friend state
   const [addFriendInput, setAddFriendInput] = useState('');
@@ -114,10 +134,28 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
   // Settings edit state
   const [editUsername, setEditUsername] = useState('');
   const [editDisplayName, setEditDisplayName] = useState('');
-  const [darkMode, setDarkMode] = useState(false);
+  const { colors, isDark: darkMode, toggleTheme } = useTheme();
+  const styles = useMemo(() => getStyles(colors), [colors]);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+
+  const createSwipeDownResponder = useCallback((onClose) => PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (evt, gestureState) => {
+      return gestureState.dy > 10 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx);
+    },
+    onPanResponderRelease: (evt, gestureState) => {
+      if (gestureState.dy > 20) {
+        onClose();
+      }
+    }
+  }), []);
+
+  const notifPan = useMemo(() => createSwipeDownResponder(() => setNotifVisible(false)), [createSwipeDownResponder]);
+  const addFriendPan = useMemo(() => createSwipeDownResponder(() => { setAddFriendVisible(false); setAddFriendInput(''); }), [createSwipeDownResponder]);
+  const settingsPan = useMemo(() => createSwipeDownResponder(() => setSettingsVisible(false)), [createSwipeDownResponder]);
+  const viewFriendPan = useMemo(() => createSwipeDownResponder(() => setViewFriendProfile(null)), [createSwipeDownResponder]);
 
   // ─── Load profile ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -165,7 +203,8 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
       setAcceptedFriends((accepted || []).map(f => {
         const isSender = f.sender_id === userId;
         const p = isSender ? f.receiver_profile : f.profiles;
-        return { id: f.id, username: p?.username, display_name: p?.display_name, avatar_url: p?.avatar_url };
+        const friendUserId = isSender ? f.receiver_id : f.sender_id;
+        return { id: f.id, user_id: friendUserId, username: p?.username, display_name: p?.display_name, avatar_url: p?.avatar_url };
       }));
     } finally {
       setFriendsLoading(false);
@@ -201,6 +240,55 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
       Alert.alert('Error', err.message);
     }
   };
+
+  const handleSendReminder = (friend) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert(
+      '🔔 Reminder Sent!',
+      `${friend.display_name || friend.username} has been nudged to complete their daily challenge.`,
+      [{ text: 'OK' }]
+    );
+  };
+
+  // ─── Fetch Friend Stats when modal opens ────────────────────────────────────
+  useEffect(() => {
+    if (!viewFriendProfile?.user_id) {
+      setFriendStats(null);
+      setFriendPosts([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setFriendStatsLoading(true);
+      try {
+        // Fetch profile created_at and their posts
+        const [{ data: profileData }, { data: postsData }] = await Promise.all([
+          supabase.from('profiles')
+            .select('created_at')
+            .eq('id', viewFriendProfile.user_id)
+            .single(),
+          supabase.from('posts')
+            .select('*')
+            .eq('user_id', viewFriendProfile.user_id)
+            .order('created_at', { ascending: true }),
+        ]);
+        if (!cancelled) {
+          const joinDate = profileData?.created_at ? new Date(profileData.created_at) : null;
+          setFriendPosts(postsData || []);
+          setFriendStats({
+            joinedOn: joinDate,
+            totalWins: postsData ? postsData.length : 0,
+            streak: 0, // Streak calculation would need daily post analysis
+          });
+        }
+      } catch {
+        if (!cancelled) setFriendStats(null);
+      } finally {
+        if (!cancelled) setFriendStatsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [viewFriendProfile?.user_id]);
 
   // ─── Change Avatar ──────────────────────────────────────────────────────────
   const handleChangeAvatar = async () => {
@@ -272,7 +360,7 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
   // ─── Render ──────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.safe}>
-      <StatusBar barStyle="dark-content" backgroundColor="#fcfaf2" />
+      <StatusBar barStyle={darkMode ? "light-content" : "dark-content"} backgroundColor={colors.bg} />
 
       {/* ── Header Bar ── */}
       <View style={styles.headerBar}>
@@ -281,7 +369,7 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
           style={styles.headerIconBtn}
           onPress={() => { Haptics.selectionAsync(); setNotifVisible(true); }}
         >
-          <BellIcon badgeCount={pendingRequests.length} />
+          <BellIcon badgeCount={pendingRequests.length} color={colors.text} styles={styles} />
         </TouchableOpacity>
 
         <Text style={styles.headerTitle}>Profile</Text>
@@ -291,7 +379,7 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
           style={styles.headerIconBtn}
           onPress={() => { Haptics.selectionAsync(); setSettingsVisible(true); }}
         >
-          <GearIcon />
+          <GearIcon color={colors.text} />
         </TouchableOpacity>
       </View>
 
@@ -348,7 +436,13 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
       {/* ── Friends List ── */}
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Friends</Text>
-        <Text style={styles.sectionCount}>{acceptedFriends.length}</Text>
+        <TouchableOpacity
+          style={styles.addFriendInlineBtn}
+          onPress={() => { Haptics.selectionAsync(); setAddFriendVisible(true); }}
+          activeOpacity={0.7}
+        >
+          <PlusIcon color={colors.accent} size={14} />
+        </TouchableOpacity>
       </View>
 
       {friendsLoading ? (
@@ -369,29 +463,29 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
           showsVerticalScrollIndicator={false}
           renderItem={({ item }) => (
             <View style={styles.friendRow}>
-              {item.avatar_url ? (
-                <Image source={{ uri: item.avatar_url }} style={styles.friendAvatar} />
-              ) : (
-                <Image source={DEFAULT_AVATAR} style={styles.friendAvatar} />
-              )}
-              <View style={styles.friendInfo}>
+              <TouchableOpacity onPress={() => { Haptics.selectionAsync(); setViewFriendProfile(item); }} activeOpacity={0.7}>
+                {item.avatar_url ? (
+                  <Image source={{ uri: item.avatar_url }} style={styles.friendAvatar} />
+                ) : (
+                  <Image source={DEFAULT_AVATAR} style={styles.friendAvatar} />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.friendInfo} onPress={() => { Haptics.selectionAsync(); setViewFriendProfile(item); }} activeOpacity={0.7}>
                 <Text style={styles.friendDisplayName}>{item.display_name || item.username}</Text>
                 <Text style={styles.friendUsername}>@{item.username}</Text>
-              </View>
-              <CheckIcon />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => handleSendReminder(item)}
+                activeOpacity={0.7}
+              >
+                <BellCircleIcon color={colors.accent} size={30} />
+              </TouchableOpacity>
             </View>
           )}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
         />
       )}
 
-      {/* ── Floating + FAB ── */}
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => { Haptics.selectionAsync(); setAddFriendVisible(true); }}
-      >
-        <PlusIcon />
-      </TouchableOpacity>
 
       {/* ══════════════════════════════════════════════════════════
           NOTIFICATION MODAL (Pending Requests)
@@ -401,14 +495,12 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
       ══════════════════════════════════════════════════════════ */}
       <Modal visible={notifVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setNotifVisible(false)}>
         <SafeAreaView style={styles.modalSafe}>
-          {/* Drag Handle */}
-          <TouchableOpacity
+          <View
             style={styles.dragHandleWrapper}
-            onPress={() => { Haptics.selectionAsync(); setNotifVisible(false); }}
-            activeOpacity={0.6}
+            {...notifPan.panHandlers}
           >
             <View style={styles.dragHandlePill} />
-          </TouchableOpacity>
+          </View>
 
           <View style={styles.modalHeaderCentered}>
             <Text style={styles.modalTitle}>Notifications</Text>
@@ -460,14 +552,12 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
             <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
               <View style={{ flex: 1 }}>
-                {/* Drag Handle */}
-                <TouchableOpacity
+                <View
                   style={styles.dragHandleWrapper}
-                  onPress={() => { Haptics.selectionAsync(); setAddFriendVisible(false); setAddFriendInput(''); }}
-                  activeOpacity={0.6}
+                  {...addFriendPan.panHandlers}
                 >
                   <View style={styles.dragHandlePill} />
-                </TouchableOpacity>
+                </View>
 
                 <View style={styles.modalHeaderCentered}>
                   <Text style={styles.modalTitle}>Add Friend</Text>
@@ -513,14 +603,12 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
             <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
               <View style={{ flex: 1 }}>
-                {/* Drag Handle */}
-                <TouchableOpacity
+                <View
                   style={styles.dragHandleWrapper}
-                  onPress={() => { Haptics.selectionAsync(); setSettingsVisible(false); }}
-                  activeOpacity={0.6}
+                  {...settingsPan.panHandlers}
                 >
                   <View style={styles.dragHandlePill} />
-                </TouchableOpacity>
+                </View>
 
                 {/* Header */}
                 <View style={styles.modalHeaderCentered}>
@@ -596,12 +684,12 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
                         <Text style={styles.settingsRowLabel}>Dark Mode</Text>
                         <Text style={styles.settingsRowSub}>Toggle light or dark theme</Text>
                       </View>
-                      <Switch
-                        value={darkMode}
-                        onValueChange={(v) => { setDarkMode(v); Haptics.selectionAsync(); }}
-                        trackColor={{ false: '#e5d5c0', true: '#d97706' }}
-                        thumbColor="#fff"
-                      />
+                       <Switch
+                         value={darkMode}
+                         onValueChange={() => { toggleTheme(); Haptics.selectionAsync(); }}
+                         trackColor={{ false: colors.isDark ? '#4d3a2b' : '#e5d5c0', true: colors.accent }}
+                         thumbColor="#fff"
+                       />
                     </View>
                   </View>
 
@@ -649,15 +737,80 @@ export default function ProfileTab({ streak = 0, totalTriumphs = 0 }) {
           </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
+
+      {/* ══════════════════════════════════════════════════════════
+          VIEW FRIEND PROFILE MODAL
+      ══════════════════════════════════════════════════════════ */}
+      <Modal visible={!!viewFriendProfile} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setViewFriendProfile(null)}>
+        <SafeAreaView style={styles.modalSafe}>
+          <View
+            style={styles.dragHandleWrapper}
+            {...viewFriendPan.panHandlers}
+          >
+            <View style={styles.dragHandlePill} />
+          </View>
+
+          {viewFriendProfile && (
+            <View style={styles.viewFriendContainer}>
+              {viewFriendProfile.avatar_url ? (
+                <Image source={{ uri: viewFriendProfile.avatar_url }} style={styles.viewFriendAvatar} />
+              ) : (
+                <Image source={DEFAULT_AVATAR} style={styles.viewFriendAvatar} />
+              )}
+              <Text style={styles.viewFriendDisplayName}>
+                {viewFriendProfile.display_name || viewFriendProfile.username}
+              </Text>
+              <Text style={styles.viewFriendUsername}>
+                @{viewFriendProfile.username}
+              </Text>
+
+              {/* Joined date */}
+              {friendStats?.joinedOn && (
+                <Text style={styles.viewFriendJoined}>
+                  Joined in {friendStats.joinedOn.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                </Text>
+              )}
+
+              <View style={styles.viewFriendStatsRow}>
+                <View style={styles.viewFriendStatBox}>
+                  <Text style={styles.viewFriendStatNumber}>🔥 {friendStats ? friendStats.streak : 0}</Text>
+                  <Text style={styles.viewFriendStatLabel}>Day Streak</Text>
+                </View>
+                <View style={styles.viewFriendStatBox}>
+                  <Text style={styles.viewFriendStatNumber}>✨ {friendStats ? friendStats.totalWins : 0}</Text>
+                  <Text style={styles.viewFriendStatLabel}>Total Wins</Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => handleSendReminder(viewFriendProfile)}
+                  activeOpacity={0.7}
+                >
+                  <BellCircleIcon color={colors.accent} size={42} />
+                </TouchableOpacity>
+              </View>
+
+              <View style={{ flex: 1, width: '100%', marginTop: 10, alignItems: 'center', justifyContent: 'center' }}>
+                <GoldenTree 
+                  history={friendPosts} 
+                  isTreeOpen={true} 
+                  hideSun={true}
+                  hideLeavesCount={true}
+                  disableGrowAnimation={true}
+                  customTitle={`${viewFriendProfile.display_name || viewFriendProfile.username}'s Canopy`}
+                />
+              </View>
+            </View>
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-const styles = StyleSheet.create({
+const getStyles = (colors) => StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: '#fcfaf2',
+    backgroundColor: colors.bg,
   },
 
   // Header
@@ -668,23 +821,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#ebd5b0',
-    backgroundColor: '#fcfaf2',
+    borderBottomColor: colors.cardBorder,
+    backgroundColor: colors.bg,
   },
   headerIconBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#ebd5b0',
+    borderColor: colors.cardBorder,
   },
   headerTitle: {
     fontSize: 24,
     fontWeight: '800',
-    color: '#2d221a',
+    color: colors.text,
     letterSpacing: -0.5,
   },
 
@@ -693,7 +846,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: -4,
     right: -4,
-    backgroundColor: '#ef4444',
+    backgroundColor: colors.badgeRed,
     borderRadius: 8,
     minWidth: 16,
     height: 16,
@@ -701,27 +854,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 3,
     borderWidth: 1.5,
-    borderColor: '#fcfaf2',
+    borderColor: colors.bg,
   },
   badgeText: {
     fontSize: 9,
     fontWeight: '800',
-    color: '#fff',
+    color: colors.white,
   },
 
   // Profile Banner
   profileBannerContainer: {
     paddingHorizontal: 20,
     paddingVertical: 20,
-    backgroundColor: '#fcfaf2',
+    backgroundColor: colors.bg,
   },
   profileBannerCard: {
-    backgroundColor: '#fff',
+    backgroundColor: colors.card,
     borderRadius: 20,
     padding: 20,
     borderWidth: 1,
-    borderColor: '#ebd5b0',
-    shadowColor: '#3e2723',
+    borderColor: colors.cardBorder,
+    shadowColor: colors.cardShadow,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.05,
     shadowRadius: 8,
@@ -742,7 +895,7 @@ const styles = StyleSheet.create({
     height: 64,
     borderRadius: 32,
     borderWidth: 2,
-    borderColor: '#ebd5b0',
+    borderColor: colors.cardBorder,
     overflow: 'hidden',
     marginRight: 16,
   },
@@ -751,7 +904,7 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   avatarLoading: {
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -762,12 +915,12 @@ const styles = StyleSheet.create({
   profileDisplayName: {
     fontSize: 20,
     fontWeight: '800',
-    color: '#3e2723',
+    color: colors.text,
     marginBottom: 2,
   },
   profileUsername: {
     fontSize: 14,
-    color: '#a38a7a', // slightly lighter
+    color: colors.textMuted, // slightly lighter
     fontWeight: '500',
   },
   statsRow: {
@@ -780,12 +933,12 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fcfaf2',
+    backgroundColor: colors.bg,
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 12,
     borderWidth: 1,
-    borderColor: '#ebd5b0',
+    borderColor: colors.cardBorder,
     gap: 8,
   },
   statBoxEmoji: {
@@ -798,11 +951,11 @@ const styles = StyleSheet.create({
   statNumber: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#3e2723',
+    color: colors.accentDark,
   },
   statLabel: {
     fontSize: 10,
-    color: '#8d6e63',
+    color: colors.textMuted,
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
@@ -821,15 +974,15 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#8d6e63',
+    color: colors.textSection,
     letterSpacing: 1,
     textTransform: 'uppercase',
   },
   sectionCount: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#d97706',
-    backgroundColor: '#fef3c7',
+    color: colors.accent,
+    backgroundColor: colors.isDark ? '#3d2e22' : '#fef3c7',
     borderRadius: 8,
     paddingHorizontal: 7,
     paddingVertical: 1,
@@ -852,23 +1005,23 @@ const styles = StyleSheet.create({
     height: 42,
     borderRadius: 21,
     borderWidth: 1,
-    borderColor: '#ebd5b0',
-    backgroundColor: '#f3eade',
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.borderLight,
   },
   friendInfo: { flex: 1 },
   friendDisplayName: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#3e2723',
+    color: colors.text,
     marginBottom: 2,
   },
   friendUsername: {
     fontSize: 13,
-    color: '#8d6e63',
+    color: colors.textMuted,
   },
   separator: {
     height: 1,
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     marginLeft: 54,
   },
 
@@ -884,11 +1037,11 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 17,
     fontWeight: '700',
-    color: '#3e2723',
+    color: colors.text,
   },
   emptySubtitle: {
     fontSize: 14,
-    color: '#8d6e63',
+    color: colors.textMuted,
   },
   centerLoader: {
     flex: 1,
@@ -896,40 +1049,110 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 
-  // FAB
-  fab: {
-    position: 'absolute',
-    bottom: 100,
-    right: 20,
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#d97706',
-    justifyContent: 'center',
+  // Inline + add friend button next to section header
+  addFriendInlineBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     alignItems: 'center',
-    shadowColor: '#d97706',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    elevation: 6,
+    justifyContent: 'center',
+  },
+
+  // View Friend Profile Modal
+  viewFriendContainer: {
+    flex: 1,
+    alignItems: 'center',
+    paddingTop: 32,
+    paddingHorizontal: 24,
+    gap: 6,
+  },
+  viewFriendAvatar: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    borderWidth: 2,
+    borderColor: colors.accent,
+    marginBottom: 12,
+  },
+  viewFriendDisplayName: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: colors.text,
+  },
+  viewFriendUsername: {
+    fontSize: 15,
+    color: colors.textMuted,
+    marginBottom: 4,
+  },
+  viewFriendJoined: {
+    fontSize: 13,
+    color: colors.textMuted,
+    fontWeight: '500',
+    opacity: 0.7,
+    marginBottom: 16,
+  },
+  viewFriendStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    marginBottom: 16,
+  },
+  viewFriendStatBox: {
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 16,
+    backgroundColor: colors.isDark ? 'rgba(61, 46, 34, 0.5)' : 'rgba(254, 243, 199, 0.6)',
+    minWidth: 110,
+  },
+  viewFriendStatNumber: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: colors.text,
+    marginBottom: 2,
+  },
+  viewFriendStatLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  viewFriendReminderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: colors.accent,
+    marginTop: 8,
+  },
+  viewFriendReminderText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.accent,
   },
 
   // Modal shared
   modalSafe: {
     flex: 1,
-    backgroundColor: '#fcfaf2',
+    backgroundColor: colors.bg,
   },
   dragHandleWrapper: {
     width: '100%',
     alignItems: 'center',
-    paddingVertical: 12,
-    backgroundColor: '#fcfaf2',
+    paddingTop: 16,
+    paddingBottom: 24,
+    backgroundColor: colors.bg,
   },
   dragHandlePill: {
     width: 36,
     height: 5,
     borderRadius: 2.5,
-    backgroundColor: '#d5c9bc',
+    backgroundColor: colors.isDark ? '#4d3a2b' : '#d5c9bc',
   },
   modalHeaderCentered: {
     height: 56,
@@ -938,21 +1161,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     position: 'relative',
     borderBottomWidth: 1,
-    borderBottomColor: '#ebd5b0',
-    backgroundColor: '#fcfaf2',
+    borderBottomColor: colors.cardBorder,
+    backgroundColor: colors.bg,
   },
   headerSaveBtn: {
     position: 'absolute',
     right: 20,
     paddingVertical: 6,
     paddingHorizontal: 14,
-    backgroundColor: '#fef3c7',
+    backgroundColor: colors.isDark ? '#3d2e22' : '#fef3c7',
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: colors.isDark ? '#5c4533' : '#fde68a',
   },
   headerSaveBtnText: {
-    color: '#d97706',
+    color: colors.accent,
     fontWeight: '700',
     fontSize: 14,
   },
@@ -963,23 +1186,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#ebd5b0',
+    borderBottomColor: colors.cardBorder,
   },
   modalTitle: {
     fontSize: 17,
     fontWeight: '700',
-    color: '#3e2723',
+    color: colors.text,
   },
   modalClose: {
     paddingVertical: 4,
     paddingHorizontal: 12,
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#ebd5b0',
+    borderColor: colors.cardBorder,
   },
   modalCloseText: {
-    color: '#d97706',
+    color: colors.accent,
     fontWeight: '600',
     fontSize: 14,
   },
@@ -992,13 +1215,13 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   acceptBtn: {
-    backgroundColor: '#d97706',
+    backgroundColor: colors.accent,
     borderRadius: 8,
     paddingVertical: 7,
     paddingHorizontal: 14,
   },
   acceptBtnText: {
-    color: '#fff',
+    color: colors.bg,
     fontWeight: '700',
     fontSize: 13,
   },
@@ -1010,38 +1233,38 @@ const styles = StyleSheet.create({
   },
   addFriendHint: {
     fontSize: 14,
-    color: '#8d6e63',
+    color: colors.textMuted,
     lineHeight: 20,
   },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1.5,
-    borderColor: '#d97706',
+    borderColor: colors.accent,
     borderRadius: 12,
     paddingHorizontal: 14,
-    backgroundColor: '#fff',
+    backgroundColor: colors.card,
   },
   atSymbol: {
     fontSize: 17,
     fontWeight: '700',
-    color: '#d97706',
+    color: colors.accent,
     marginRight: 4,
   },
   addFriendInput: {
     flex: 1,
     paddingVertical: 13,
     fontSize: 16,
-    color: '#3e2723',
+    color: colors.text,
   },
 
   // Primary Button
   primaryBtn: {
-    backgroundColor: '#d97706',
+    backgroundColor: colors.accent,
     borderRadius: 12,
     paddingVertical: 15,
     alignItems: 'center',
-    shadowColor: '#d97706',
+    shadowColor: colors.accent,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.2,
     shadowRadius: 6,
@@ -1051,7 +1274,7 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   primaryBtnText: {
-    color: '#fff',
+    color: colors.bg,
     fontSize: 16,
     fontWeight: '700',
   },
@@ -1077,8 +1300,8 @@ const styles = StyleSheet.create({
     height: 88,
     borderRadius: 44,
     borderWidth: 2,
-    borderColor: '#ebd5b0',
-    backgroundColor: '#f3eade',
+    borderColor: colors.cardBorder,
+    backgroundColor: colors.borderLight,
   },
   cameraOverlay: {
     position: 'absolute',
@@ -1087,32 +1310,32 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#d97706',
+    backgroundColor: colors.accent,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#fcfaf2',
+    borderColor: colors.bg,
   },
   changePhotoLabel: {
     fontSize: 14,
-    color: '#d97706',
+    color: colors.accent,
     fontWeight: '600',
   },
   settingsSectionLabel: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#a38a7a',
+    color: colors.textSection,
     letterSpacing: 1.5,
     paddingHorizontal: 20,
     paddingBottom: 8,
     paddingTop: 4,
   },
   settingsCard: {
-    backgroundColor: '#fff',
+    backgroundColor: colors.card,
     marginHorizontal: 16,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#ebd5b0',
+    borderColor: colors.cardBorder,
     marginBottom: 20,
     overflow: 'hidden',
   },
@@ -1123,18 +1346,18 @@ const styles = StyleSheet.create({
   fieldLabel: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#a38a7a',
+    color: colors.textMuted,
     letterSpacing: 0.8,
     marginBottom: 4,
   },
   fieldInput: {
     fontSize: 16,
-    color: '#3e2723',
+    color: colors.text,
     paddingVertical: 2,
   },
   fieldDivider: {
     height: 1,
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     marginHorizontal: 16,
   },
   settingsRow: {
@@ -1147,12 +1370,12 @@ const styles = StyleSheet.create({
   settingsRowLabel: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#3e2723',
+    color: colors.text,
     marginBottom: 2,
   },
   settingsRowSub: {
     fontSize: 12,
-    color: '#8d6e63',
+    color: colors.textMuted,
   },
 
   // Logout
@@ -1160,14 +1383,14 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginBottom: 8,
     borderWidth: 1.5,
-    borderColor: '#fca5a5',
-    backgroundColor: '#fef2f2',
+    borderColor: colors.isDark ? '#5c1d1d' : '#fca5a5',
+    backgroundColor: colors.isDark ? '#311c1c' : '#fef2f2',
     borderRadius: 12,
     paddingVertical: 15,
     alignItems: 'center',
   },
   logoutBtnText: {
-    color: '#ef4444',
+    color: colors.badgeRed,
     fontWeight: '700',
     fontSize: 16,
   },

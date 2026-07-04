@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
+import { useTheme } from '../context/ThemeContext';
 import {
   StyleSheet,
   Text,
@@ -17,6 +18,8 @@ import * as Haptics from 'expo-haptics';
 import { useAuth } from '../hooks/useAuth';
 
 export default function AuthScreen() {
+  const { colors } = useTheme();
+  const styles = useMemo(() => getStyles(colors), [colors]);
   const [mode, setMode] = useState('login'); // 'login' | 'signup'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -205,10 +208,10 @@ export default function AuthScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (colors) => StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#fcfaf2',
+    backgroundColor: colors.bg,
   },
   flex: {
     flex: 1,
@@ -230,22 +233,22 @@ const styles = StyleSheet.create({
   appName: {
     fontSize: 30,
     fontWeight: '800',
-    color: '#3e2723',
+    color: colors.text,
     letterSpacing: -0.5,
   },
   tagline: {
     fontSize: 15,
-    color: '#8d6e63',
+    color: colors.textMuted,
     marginTop: 6,
     fontWeight: '500',
   },
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: colors.card,
     borderRadius: 20,
     padding: 24,
     borderWidth: 1,
-    borderColor: '#ebd5b0',
-    shadowColor: '#3e2723',
+    borderColor: colors.cardBorder,
+    shadowColor: colors.cardShadow,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.06,
     shadowRadius: 12,
@@ -253,7 +256,7 @@ const styles = StyleSheet.create({
   },
   toggleRow: {
     flexDirection: 'row',
-    backgroundColor: '#f3eade',
+    backgroundColor: colors.borderLight,
     borderRadius: 12,
     padding: 4,
     marginBottom: 24,
@@ -265,8 +268,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   toggleButtonActive: {
-    backgroundColor: '#d97706',
-    shadowColor: '#d97706',
+    backgroundColor: colors.accent,
+    shadowColor: colors.accent,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
@@ -275,10 +278,10 @@ const styles = StyleSheet.create({
   toggleText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#8d6e63',
+    color: colors.textMuted,
   },
   toggleTextActive: {
-    color: '#fff',
+    color: colors.bg,
   },
   inputGroup: {
     marginBottom: 16,
@@ -286,19 +289,19 @@ const styles = StyleSheet.create({
   inputLabel: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#d97706',
+    color: colors.accent,
     letterSpacing: 1.5,
     marginBottom: 8,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ebd5b0',
+    borderColor: colors.cardBorder,
     borderRadius: 12,
     paddingVertical: 13,
     paddingHorizontal: 16,
     fontSize: 15,
-    color: '#3e2723',
-    backgroundColor: '#fcfaf2',
+    color: colors.text,
+    backgroundColor: colors.bg,
   },
   feedbackBanner: {
     borderRadius: 10,
@@ -306,35 +309,35 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   feedbackError: {
-    backgroundColor: '#fef2f2',
+    backgroundColor: colors.isDark ? '#311c1c' : '#fef2f2',
     borderWidth: 1,
-    borderColor: '#fca5a5',
+    borderColor: colors.isDark ? '#5c1d1d' : '#fca5a5',
   },
   feedbackSuccess: {
-    backgroundColor: '#f0fdf4',
+    backgroundColor: colors.isDark ? '#14311c' : '#f0fdf4',
     borderWidth: 1,
-    borderColor: '#86efac',
+    borderColor: colors.isDark ? '#1d5c2e' : '#86efac',
   },
   feedbackText: {
     fontSize: 13,
-    color: '#3e2723',
+    color: colors.text,
     lineHeight: 19,
     fontWeight: '500',
   },
   submitButton: {
-    backgroundColor: '#d97706',
+    backgroundColor: colors.accent,
     borderRadius: 12,
     paddingVertical: 15,
     alignItems: 'center',
     marginTop: 4,
-    shadowColor: '#d97706',
+    shadowColor: colors.accent,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
     shadowRadius: 8,
     elevation: 4,
   },
   submitButtonText: {
-    color: '#fff',
+    color: colors.bg,
     fontSize: 16,
     fontWeight: '700',
   },
@@ -345,11 +348,11 @@ const styles = StyleSheet.create({
   },
   footerText: {
     fontSize: 14,
-    color: '#8d6e63',
+    color: colors.textMuted,
   },
   footerLink: {
     fontSize: 14,
-    color: '#d97706',
+    color: colors.accent,
     fontWeight: '700',
   },
 });

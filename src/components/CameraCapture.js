@@ -243,8 +243,8 @@ export default function CameraCapture({ onPhotoCaptured, onCancel, onSkip, task 
               )
             )}
             <View style={styles.taskOverlayBox}>
-              <Text style={styles.taskOverlayLabel}>TODAY'S VICTORY</Text>
-              <Text style={styles.taskOverlayText} numberOfLines={3}>"{task}"</Text>
+              <Text style={styles.taskOverlayLabel}>TODAY&apos;S VICTORY</Text>
+              <Text style={styles.taskOverlayText} numberOfLines={3}>&quot;{task}&quot;</Text>
             </View>
           </View>
 
@@ -305,7 +305,7 @@ export default function CameraCapture({ onPhotoCaptured, onCancel, onSkip, task 
 
           {/* Floating minimal instruction banner */}
           <View style={styles.instructionContainer}>
-            <Text style={styles.instructionSmall} numberOfLines={2}>"{task}"</Text>
+            <Text style={styles.instructionSmall} numberOfLines={2}>&quot;{task}&quot;</Text>
           </View>
         </CameraView>
       </View>
@@ -389,13 +389,13 @@ export default function CameraCapture({ onPhotoCaptured, onCancel, onSkip, task 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fcfaf2',
+    backgroundColor: '#000000',
   },
   cameraWrapper: {
     height: SCREEN_HEIGHT * 0.50,
     borderRadius: 24,
     borderWidth: 1.5,
-    borderColor: '#ebd5b0', // Clean brown outline
+    borderColor: '#3d2e22', // Dark outline
     overflow: 'hidden',
     marginHorizontal: 24,
     marginTop: 20,
@@ -421,17 +421,17 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   headerIconButton: {
-    backgroundColor: 'rgba(45, 34, 26, 0.4)',
+    backgroundColor: 'rgba(26, 19, 15, 0.6)',
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#ebd5b0', // Clean outline
+    borderColor: '#3d2e22', // Clean outline
     justifyContent: 'center',
     alignItems: 'center',
   },
   headerIconText: {
-    color: '#fcfaf2',
+    color: '#f5eedc',
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.5,
@@ -449,16 +449,16 @@ const styles = StyleSheet.create({
   },
   modeTabActive: {
     borderBottomWidth: 2,
-    borderBottomColor: '#d97706',
+    borderBottomColor: '#fb923c',
   },
   modeTabText: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#8a7767',
+    color: '#a69282',
     letterSpacing: 1,
   },
   modeTabTextActive: {
-    color: '#d97706',
+    color: '#fb923c',
   },
   libraryButton: {
     paddingHorizontal: 16,
@@ -467,7 +467,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   libraryButtonText: {
-    color: '#8a7767',
+    color: '#a69282',
     fontSize: 15,
     fontWeight: '600',
   },
@@ -477,7 +477,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     alignSelf: 'center',
-    backgroundColor: 'rgba(45, 34, 26, 0.05)',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
@@ -491,19 +491,19 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   zoomPillActive: {
-    backgroundColor: 'rgba(217, 119, 6, 0.1)',
+    backgroundColor: 'rgba(251, 146, 60, 0.15)',
   },
   zoomText: {
-    color: '#8a7767',
+    color: '#a69282',
     fontSize: 13,
     fontWeight: '600',
   },
   zoomTextActive: {
-    color: '#d97706',
+    color: '#fb923c',
     fontWeight: '800',
   },
   noThanksText: {
-    color: '#8a7767',
+    color: '#a69282',
     fontSize: 14,
     fontWeight: '600',
     textAlign: 'center',
@@ -513,23 +513,23 @@ const styles = StyleSheet.create({
     bottom: 16,
     left: 16,
     right: 16,
-    backgroundColor: 'rgba(252, 250, 242, 0.85)',
+    backgroundColor: 'rgba(26, 19, 15, 0.9)',
     borderRadius: 16,
     paddingHorizontal: 16,
     paddingVertical: 10,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#ebd5b0',
+    borderColor: '#3d2e22',
   },
   instruction: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#2d221a',
+    color: '#f5eedc',
     marginBottom: 4,
   },
   instructionSmall: {
     fontSize: 13,
-    color: '#8a7767',
+    color: '#a69282',
     fontWeight: '600',
     fontStyle: 'italic',
     textAlign: 'center',
@@ -552,7 +552,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
   },
   cancelButtonText: {
-    color: '#8a7767',
+    color: '#a69282',
     fontSize: 15,
     fontWeight: '600',
   },
@@ -561,7 +561,7 @@ const styles = StyleSheet.create({
     height: 76,
     borderRadius: 38,
     borderWidth: 4,
-    borderColor: '#ebd5b0', // Brown outer ring
+    borderColor: '#3d2e22', // Darker outer ring
     backgroundColor: 'transparent',
     justifyContent: 'center',
     alignItems: 'center',
@@ -570,7 +570,7 @@ const styles = StyleSheet.create({
     width: 60,
     height: 60,
     borderRadius: 30,
-    backgroundColor: '#d97706', // Gold/amber shutter center
+    backgroundColor: '#fb923c', // Glowing amber shutter center
   },
   spacer: {
     width: 40,
@@ -579,7 +579,7 @@ const styles = StyleSheet.create({
   // Post-capture screen styles
   fullscreenContainer: {
     flex: 1,
-    backgroundColor: '#fcfaf2',
+    backgroundColor: '#000000',
   },
   fullscreenAnimatedView: {
     flex: 1,
@@ -591,7 +591,7 @@ const styles = StyleSheet.create({
   fullscreenNoteTitle: {
     fontSize: 26,
     fontWeight: '800',
-    color: '#2d221a',
+    color: '#f5eedc',
     textAlign: 'center',
     marginTop: 10,
     marginBottom: 16,
@@ -601,10 +601,10 @@ const styles = StyleSheet.create({
     height: SCREEN_HEIGHT * 0.42,
     borderRadius: 24,
     overflow: 'hidden',
-    backgroundColor: '#f3eade',
+    backgroundColor: '#1a130f',
     position: 'relative',
     borderWidth: 1,
-    borderColor: '#e8dec9',
+    borderColor: '#3d2e22',
     marginBottom: 20,
   },
   fullscreenPreviewImage: {
@@ -616,13 +616,13 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(45, 34, 26, 0.75)',
+    backgroundColor: 'rgba(18, 13, 9, 0.85)',
     padding: 16,
   },
   taskOverlayLabel: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#ebd5b0',
+    color: '#fb923c',
     letterSpacing: 1,
     marginBottom: 4,
   },
@@ -642,27 +642,27 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     borderWidth: 1.5,
-    borderColor: '#e8dec9',
-    backgroundColor: '#f3eade',
+    borderColor: '#3d2e22',
+    backgroundColor: '#1a130f',
     marginBottom: 12,
   },
   retakeButtonTextLarge: {
-    color: '#8a7767',
+    color: '#a69282',
     fontSize: 15,
     fontWeight: '600',
   },
   primaryButtonBig: {
-    backgroundColor: '#d97706',
+    backgroundColor: '#fb923c',
     paddingVertical: 18,
     borderRadius: 18,
     alignItems: 'center',
-    shadowColor: '#d97706',
+    shadowColor: '#fb923c',
     shadowOpacity: 0.15,
     shadowRadius: 12,
     elevation: 3,
   },
   primaryButtonTextBig: {
-    color: '#fcfaf2',
+    color: '#120d09',
     fontSize: 17,
     fontWeight: '800',
     letterSpacing: 0.5,
@@ -674,27 +674,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   primaryButton: {
-    backgroundColor: '#d97706',
+    backgroundColor: '#fb923c',
     paddingVertical: 16,
     borderRadius: 16,
     alignItems: 'center',
     marginBottom: 12,
   },
   primaryButtonText: {
-    color: '#fcfaf2',
+    color: '#120d09',
     fontSize: 16,
     fontWeight: '700',
   },
   errorTitle: {
     fontSize: 24,
     fontWeight: '700',
-    color: '#2d221a',
+    color: '#f5eedc',
     marginBottom: 12,
     textAlign: 'center',
   },
   errorMessage: {
     fontSize: 14,
-    color: '#8a7767',
+    color: '#a69282',
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 32,

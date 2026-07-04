@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, memo, useState } from 'react';
+import React, { useEffect, useRef, memo, useState, useMemo } from 'react';
+import { useTheme } from '../context/ThemeContext';
 import { StyleSheet, View, Dimensions, Animated, Text, Image, Easing, FlatList, TouchableOpacity, Modal, PanResponder, TextInput, Keyboard } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import Svg, { G, Path, Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
@@ -51,7 +52,7 @@ const Bird = memo(({ id, initialDelay, onFinished }) => {
   }, [duration, id, initialDelay, onFinished, x]);
 
   return (
-    <Animated.View style={[styles.birdContainer, { top: y, transform: [{ translateX: x }, { scale }] }]}>
+    <Animated.View style={{ position: 'absolute', zIndex: 1, top: y, transform: [{ translateX: x }, { scale }] }}>
       <Svg width={20} height={15}>
         <Path d={BIRD_PATH} fill="#94a3b8" opacity={opacity} />
       </Svg>
@@ -99,7 +100,7 @@ const formatMilestoneDate = (dateData) => {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 };
 
-const InteractiveLeaf = memo(({ config, isUnlocked, onPress }) => {
+const InteractiveLeaf = memo(({ config, isUnlocked, onPress, colors }) => {
   const scaleAnim = useRef(new Animated.Value(isUnlocked ? 1 : 0.8)).current;
   const prevUnlocked = useRef(isUnlocked);
   const x = config.px * CANVAS_SIZE;
@@ -132,14 +133,14 @@ const InteractiveLeaf = memo(({ config, isUnlocked, onPress }) => {
             {isUnlocked ? (
               // Unlocked: bold gold fill, white outer stroke + deep amber inner stroke for contrast
               <>
-                {/* White outline layer — renders behind to create separation from dark trunk */}
-                <Path d={REALISTIC_LEAF_PATH} fill="none" stroke="#ffffff" strokeWidth={4} pointerEvents="none" opacity={0.9} />
+                {/* Outline layer — renders behind to create separation from dark trunk */}
+                <Path d={REALISTIC_LEAF_PATH} fill="none" stroke={colors ? colors.bg : "#ffffff"} strokeWidth={4} pointerEvents="none" opacity={0.9} />
                 {/* Gold filled leaf with amber border */}
-                <Path d={REALISTIC_LEAF_PATH} fill="url(#goldGradient)" stroke="#a75a0c" strokeWidth={1.8} pointerEvents="none" opacity={1} />
+                <Path d={REALISTIC_LEAF_PATH} fill="url(#goldGradient)" stroke={colors ? colors.accentDark : "#a75a0c"} strokeWidth={1.8} pointerEvents="none" opacity={1} />
               </>
             ) : (
               // Locked: light slate with visible border so user can see slots to fill
-              <Path d={REALISTIC_LEAF_PATH} fill="#d1d5db" stroke="#9ca3af" strokeWidth={1.5} pointerEvents="none" opacity={0.45} />
+              <Path d={REALISTIC_LEAF_PATH} fill={colors?.isDark ? "#374151" : "#d1d5db"} stroke={colors?.isDark ? "#4b5563" : "#9ca3af"} strokeWidth={1.5} pointerEvents="none" opacity={0.45} />
             )}
           </G>
         </AnimatedG>
@@ -149,7 +150,9 @@ const InteractiveLeaf = memo(({ config, isUnlocked, onPress }) => {
 });
 InteractiveLeaf.displayName = 'InteractiveLeaf';
 
-export default function GoldenTree({ history = [], onMilestonePanelChange, isTreeOpen = false }) {
+export default function GoldenTree({ history = [], onMilestonePanelChange, isTreeOpen = false, hideSun = false, customTitle, hideLeavesCount = false }) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => getStyles(colors), [colors]);
   const completedCount = history.length;
   const [displayedCount, setDisplayedCount] = useState(completedCount);
 
@@ -352,18 +355,20 @@ export default function GoldenTree({ history = [], onMilestonePanelChange, isTre
     >
       <View style={styles.scrollContent}>
         <View style={styles.metricsHeaderBlock}>
-          <Text style={styles.treeProgressCaption}>Discipline Canopy</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
-            <RollingNumber
-              value={Math.min(displayedCount, 30)}
-              height={32}
-              fontSize={26}
-              fontWeight="900"
-              color="#d97706"
-              active={isTreeOpen}
-            />
-            <Text style={[styles.counterSuperText, { marginTop: 0, fontSize: 26, lineHeight: 32 }]}> / 30 Leaves</Text>
-          </View>
+          <Text style={styles.treeProgressCaption}>{customTitle || 'Discipline Canopy'}</Text>
+          {!hideLeavesCount && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+              <RollingNumber
+                value={Math.min(displayedCount, 30)}
+                height={32}
+                fontSize={26}
+                fontWeight="900"
+                color={colors.accent}
+                active={isTreeOpen}
+              />
+              <Text style={[styles.counterSuperText, { marginTop: 0, fontSize: 26, lineHeight: 32 }]}> / 30 Leaves</Text>
+            </View>
+          )}
         </View>
 
         <View style={styles.canvasContainer}>
@@ -373,7 +378,7 @@ export default function GoldenTree({ history = [], onMilestonePanelChange, isTre
 
 
           {/* ☀️ Sun — rendered BEFORE tree image so it sits fully behind the trunk */}
-          {(() => {
+          {!hideSun && (() => {
             const SUN_SIZE = CANVAS_SIZE * 0.13;
             const sunX = sunProgress.interpolate({
                inputRange: [0, 1],
@@ -395,32 +400,32 @@ export default function GoldenTree({ history = [], onMilestonePanelChange, isTre
               }}>
                 {/* 5 overlapping glow layers — each barely visible, together they form a smooth radial blend */}
                 {[
-                  { mul: 5.5, alpha: 0.04 },
-                  { mul: 4.0, alpha: 0.06 },
-                  { mul: 2.8, alpha: 0.09 },
-                  { mul: 1.9, alpha: 0.14 },
-                  { mul: 1.35, alpha: 0.20 },
+                  { mul: 5.5, alpha: 0.012 },
+                  { mul: 4.0, alpha: 0.022 },
+                  { mul: 2.8, alpha: 0.040 },
+                  { mul: 1.9, alpha: 0.065 },
+                  { mul: 1.35, alpha: 0.110 },
                 ].map(({ mul, alpha }, i) => (
                   <View key={i} style={{
                     position: 'absolute',
                     width: SUN_SIZE * mul,
                     height: SUN_SIZE * mul,
                     borderRadius: (SUN_SIZE * mul) / 2,
-                    backgroundColor: `rgba(253, 220, 80, ${alpha})`,
+                    backgroundColor: colors.isDark ? `rgba(255, 255, 255, ${alpha})` : `rgba(253, 220, 80, ${alpha})`,
                     top: -(SUN_SIZE * (mul - 1) / 2),
                     left: -(SUN_SIZE * (mul - 1) / 2),
                   }} />
                 ))}
-                {/* Core disc */}
+                {/* Core disc (Moon/Sun) */}
                 <View style={{
                   width: SUN_SIZE,
                   height: SUN_SIZE,
                   borderRadius: SUN_SIZE / 2,
-                  backgroundColor: '#fffde7',
-                  shadowColor: '#fde68a',
+                  backgroundColor: colors.isDark ? '#f8fafc' : '#fffde7',
+                  shadowColor: colors.isDark ? '#ffffff' : '#fde68a',
                   shadowOffset: { width: 0, height: 0 },
                   shadowOpacity: 1,
-                  shadowRadius: 18,
+                  shadowRadius: colors.isDark ? 14 : 18,
                   elevation: 20,
                 }} />
               </Animated.View>
@@ -440,7 +445,7 @@ export default function GoldenTree({ history = [], onMilestonePanelChange, isTre
             </Defs>
 
             {CANOPY_POSITIONS.map((leaf, index) => (
-              <InteractiveLeaf key={leaf.id} config={leaf} isUnlocked={index < displayedCount} onPress={() => openPanel(index)} />
+              <InteractiveLeaf key={leaf.id} config={leaf} isUnlocked={index < displayedCount} onPress={() => openPanel(index)} colors={colors} />
             ))}
           </Svg>
 
@@ -661,12 +666,12 @@ export default function GoldenTree({ history = [], onMilestonePanelChange, isTre
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fcfaf2' }, // Warm ivory background
+const getStyles = (colors) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.bg }, // Warm ivory background
   scrollContent: { flex: 1, alignItems: 'center', paddingTop: 20, paddingBottom: 110 },
   metricsHeaderBlock: { alignItems: 'center', marginBottom: 10 },
-  treeProgressCaption: { color: '#8a7767', fontSize: 11, fontWeight: '800', letterSpacing: 2, textTransform: 'uppercase' },
-  counterSuperText: { color: '#d97706', fontSize: 26, fontWeight: '900', marginTop: 4 }, // Warm honey amber
+  treeProgressCaption: { color: colors.textMuted, fontSize: 11, fontWeight: '800', letterSpacing: 2, textTransform: 'uppercase' },
+  counterSuperText: { color: colors.accent, fontSize: 26, fontWeight: '900', marginTop: 4 }, // Warm honey amber
 
   canvasContainer: {
     width: CANVAS_SIZE, height: CANVAS_SIZE, position: 'relative',
@@ -674,7 +679,7 @@ const styles = StyleSheet.create({
   },
   baseTreeSkeletonImage: { width: '100%', height: '100%', position: 'absolute', zIndex: 0 },
   birdContainer: { position: 'absolute', zIndex: 1 },
-  treeFooterHint: { color: '#8a7767', fontSize: 13, fontWeight: '500', textAlign: 'center', marginTop: 15, paddingHorizontal: 36, lineHeight: 19.5 }, // 1.5x lineHeight
+  treeFooterHint: { color: colors.textMuted, fontSize: 13, fontWeight: '500', textAlign: 'center', marginTop: 15, paddingHorizontal: 36, lineHeight: 19.5 }, // 1.5x lineHeight
 
   // Grass + Sun scene — absolutely positioned at the bottom of canvasContainer
   sceneContainer: {
@@ -686,13 +691,13 @@ const styles = StyleSheet.create({
   },
   grassTuft: {
     position: 'absolute',
-    tintColor: '#bda68f', // Warm earthy color to blend in light mode
+    tintColor: colors.grassTuft, // Warm earthy color to blend in light mode
     opacity: 0.85,
   },
   sun: {
     position: 'absolute',
-    backgroundColor: '#fffde7',
-    shadowColor: '#fbbf24',
+    backgroundColor: colors.sunBg,
+    shadowColor: colors.sunGlow,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 1,
     shadowRadius: 24,
@@ -709,7 +714,7 @@ const styles = StyleSheet.create({
   },
 
   quoteText: {
-    color: '#3b2f27',
+    color: colors.textMedium,
     fontSize: 14,
     fontStyle: 'italic',
     textAlign: 'center',
@@ -723,34 +728,34 @@ const styles = StyleSheet.create({
 
   sidePanelWindow: {
     position: 'absolute', top: 0, left: 0, bottom: 0, width: PANEL_WIDTH,
-    backgroundColor: '#fffdf9', borderRightWidth: 1, borderRightColor: '#e8dec9',
-    shadowColor: '#2d221a', shadowOffset: { width: 5, height: 0 }, shadowOpacity: 0.12,
+    backgroundColor: colors.card, borderRightWidth: 1, borderRightColor: colors.border,
+    shadowColor: colors.cardShadow, shadowOffset: { width: 5, height: 0 }, shadowOpacity: 0.12,
     shadowRadius: 15, elevation: 20, paddingTop: 80, paddingBottom: 110,
   },
 
   carouselSlide: { width: PANEL_WIDTH, paddingHorizontal: 20, justifyContent: 'center', alignItems: 'center' },
-  milestoneDayText: { color: '#d97706', fontSize: 12, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 8 },
-  milestoneTitle: { color: '#2d221a', fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 20 },
+  milestoneDayText: { color: colors.accent, fontSize: 12, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 8 },
+  milestoneTitle: { color: colors.text, fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 20 },
 
-  imageContainer: { width: PANEL_WIDTH - 40, height: PANEL_WIDTH - 40, borderRadius: 18, overflow: 'hidden', marginBottom: 20, borderWidth: 1, borderColor: '#e8dec9' },
+  imageContainer: { width: PANEL_WIDTH - 40, height: PANEL_WIDTH - 40, borderRadius: 18, overflow: 'hidden', marginBottom: 20, borderWidth: 1, borderColor: colors.border },
   milestoneImage: { width: '100%', height: '100%', resizeMode: 'cover' },
-  milestoneDescription: { color: '#8a7767', fontSize: 14, textAlign: 'center', lineHeight: 21, marginBottom: 15 }, // 1.5x lineHeight
-  milestoneDate: { color: '#b59370', fontSize: 13, fontWeight: '600', fontStyle: 'italic', marginTop: 'auto' },
+  milestoneDescription: { color: colors.textMuted, fontSize: 14, textAlign: 'center', lineHeight: 21, marginBottom: 15 }, // 1.5x lineHeight
+  milestoneDate: { color: colors.textSection, fontSize: 13, fontWeight: '600', fontStyle: 'italic', marginTop: 'auto' },
 
   dotsContainer: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap', paddingHorizontal: 20, marginTop: 10, paddingBottom: 10 },
   dot: { width: 7, height: 7, borderRadius: 3.5, marginHorizontal: 4, marginVertical: 4 },
-  activeDot: { backgroundColor: '#d97706', width: 9, height: 9, borderRadius: 4.5 },
-  inactiveDot: { backgroundColor: '#e8dec9' },
+  activeDot: { backgroundColor: colors.accent, width: 9, height: 9, borderRadius: 4.5 },
+  inactiveDot: { backgroundColor: colors.border },
 
   // Milestone inline note styles
   noteRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#f5efe4',
+    backgroundColor: colors.borderLight,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#e8dec9',
+    borderColor: colors.border,
     paddingHorizontal: 16,
     paddingVertical: 14,
     marginTop: 14,
@@ -759,14 +764,14 @@ const styles = StyleSheet.create({
   },
   noteDisplayText: {
     flex: 1,
-    color: '#3b2f27',
+    color: colors.textMedium,
     fontSize: 14,
     lineHeight: 21, // 1.5x lineHeight
     marginRight: 10,
   },
   notePlaceholderText: {
     flex: 1,
-    color: '#8a7767',
+    color: colors.textMuted,
     fontSize: 13,
     fontStyle: 'italic',
     marginRight: 10,
@@ -782,19 +787,19 @@ const styles = StyleSheet.create({
   },
   penIconText: {
     fontSize: 16,
-    color: '#d97706',
+    color: colors.accent,
   },
   noteEditContainer: {
     marginTop: 14,
     width: '100%',
-    backgroundColor: '#fffdf9',
+    backgroundColor: colors.card,
     borderRadius: 16,
     borderWidth: 1.5,
-    borderColor: '#d97706',
+    borderColor: colors.accent,
     padding: 12,
   },
   noteTextInput: {
-    color: '#3b2f27',
+    color: colors.textMedium,
     fontSize: 14,
     lineHeight: 21, // 1.5x lineHeight
     minHeight: 70,
